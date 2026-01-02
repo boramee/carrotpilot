@@ -243,6 +243,10 @@ class Soundd:
           self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x)) * self.soundVolumeAdjust
 
         self.get_audible_alert(sm)
+        import os
+        if os.path.exists("/data/no_beep"):
+            if self.current_alert in [AudibleAlert.engage, AudibleAlert.disengage]:
+                self.current_alert = AudibleAlert.none
 
         rk.keep_time()
 

@@ -7,11 +7,19 @@ import threading
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 
+# =========================================================
+# [설정] True: 소리 켜짐 / False: 소리 꺼짐 (무음)
+# 기기 자체에서 소리가 난다면 False로 설정하여 중복 소리를 막으세요.
+USE_GPIO_BEEP = False
+# =========================================================
+
 class Beepd:
   def __init__(self):
     self.current_alert = AudibleAlert.none
-    self.enable_gpio()
-    self.startup_beep()
+    # 소리 옵션이 켜져 있을 때만 GPIO 초기화 및 시작음 출력
+    if USE_GPIO_BEEP:
+      self.enable_gpio()
+      self.startup_beep()
 
   def enable_gpio(self):
     # 尝试 export，忽略已 export 的错误
@@ -30,6 +38,10 @@ class Beepd:
                    encoding='utf8')
 
   def _beep(self, on):
+    # ★ 핵심: 소리 설정이 꺼져있으면(False) 여기서 바로 중단
+    if not USE_GPIO_BEEP:
+      return
+
     val = "1" if on else "0"
     subprocess.run(f"echo \"{val}\" | sudo tee /sys/class/gpio/gpio42/value",
                    shell=True,
@@ -82,7 +94,9 @@ class Beepd:
   def update_alert(self, new_alert):
     if new_alert != self.current_alert:
       self.current_alert = new_alert
-      print(f"[BEEP] New alert: {new_alert}")
+      # 디버그용 출력 (소리는 안 나도 로그로 확인 가능)
+      # print(f"[BEEP] New alert: {new_alert}")
+      
       if new_alert == AudibleAlert.engage:
         self.dispatch_beep(self.engage)
       elif new_alert == AudibleAlert.disengage:
@@ -133,7 +147,7 @@ class Beepd:
 
 def main():
   s = Beepd()
-  s.beepd_thread(test=False)  # 改成 True 可启用模拟测试数据
+  s.beepd_thread(test=False)
 
 if __name__ == "__main__":
   main()

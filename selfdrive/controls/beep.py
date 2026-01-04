@@ -30,12 +30,13 @@ class Beepd:
                    encoding='utf8')
 
   def _beep(self, on):
-    val = "1" if on else "0"
-    subprocess.run(f"echo \"{val}\" | sudo tee /sys/class/gpio/gpio42/value",
-                   shell=True,
-                   stderr=subprocess.DEVNULL,
-                   stdout=subprocess.DEVNULL,
-                   encoding='utf8')
+    #val = "1" if on else "0"
+    #subprocess.run(f"echo \"{val}\" | sudo tee /sys/class/gpio/gpio42/value",
+    #               shell=True,
+    #               stderr=subprocess.DEVNULL,
+    #               stdout=subprocess.DEVNULL,
+    #               encoding='utf8')
+    pass
 
   def engage(self):
     self._beep(True)

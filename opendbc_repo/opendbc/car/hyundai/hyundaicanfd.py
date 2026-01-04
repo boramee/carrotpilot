@@ -268,16 +268,14 @@ def create_acc_cancel(packer, CP, CAN, cruise_info_copy):
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values)
 
 def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
-
-  if CS.lfahda_cluster_info is not None:
-    values = {} #
+    values = {}
+    if CS.lfahda_cluster_info is not None:
+        values = copy.copy(CS.lfahda_cluster_info)
+    
     values["HDA_CntrlModSta"] = 2 if long_active else 0
     values["HDA_LFA_SymSta"] = 2 if lat_active else 0
-
-    # 
-  else:
-    return []
-  return [packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values)]
+    
+    return [packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values)]
 
 
 def create_acc_control_scc2(packer, CAN, enabled, accel_last, accel, stopping, gas_override, set_speed, hud_control, hyundai_jerk, CS):

@@ -267,13 +267,14 @@ def create_acc_cancel(packer, CP, CAN, cruise_info_copy):
   })
   return packer.make_can_msg("SCC_CONTROL", CAN.ECAN, values)
 
-def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
-    values = {}
+def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active, lat_enabled):  # ← 파라미터 추가
+    
+    values = {}  # ← 무조건 생성
     if CS.lfahda_cluster_info is not None:
-        values = copy.copy(CS.lfahda_cluster_info)
+        values = copy.copy(CS.lfahda_cluster_info)  # ← 있으면 복사
     
     values["HDA_CntrlModSta"] = 2 if long_active else 0
-    values["HDA_LFA_SymSta"] = 2 if lat_active else 0
+    values["HDA_LFA_SymSta"] = 2 if lat_active else (1 if lat_enabled else 0)  # ← 3단계 상태
     
     return [packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values)]
 

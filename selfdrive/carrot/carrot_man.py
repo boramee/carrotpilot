@@ -396,8 +396,8 @@ class CarrotMan:
       if self.gas_pressed_count > 0:
         # [수정] AutoGasSyncSpeed가 켜져있을 때만(>0) 속도 동기화 및 학습 수행
         if self.params.get_int("AutoGasSyncSpeed") > 0:
-        vt = max(vt, v_cruise_apply)
-        carrot_speed.add_sample(lat, lon, heading, vt)
+          vt = max(vt, v_cruise_apply)
+       carrot_speed.add_sample(lat, lon, heading, vt)
 
       self.params_memory.put_int_nonblocking("CarrotSpeed", int(vt))
 

@@ -115,7 +115,16 @@ class LongControl:
       output_accel = self.last_output_accel
 
       if soft_hold_active:
-        output_accel = self.CP.stopAccel
+        # Some cars can report soft-hold while still creeping. Jumping straight to stopAccel can feel like a "bump".
+        # When SoftStop is enabled, ramp towards stopAccel with a low-speed jerk limit instead of stepping.
+        if self.soft_stop_mode > 0 and CS.vEgo < 1.0:
+          target = float(self.CP.stopAccel)
+          # tighter jerk limit near standstill
+          jerk_limit = float(np.interp(CS.vEgo, [0.0, 1.0], [0.3, 1.2]))  # m/s^3
+          max_delta = jerk_limit * DT_CTRL
+          output_accel = self.last_output_accel + np.clip(target - self.last_output_accel, -max_delta, max_delta)
+        else:
+          output_accel = self.CP.stopAccel
 
       stopAccel = self.stopping_accel if self.stopping_accel < 0.0 else self.CP.stopAccel
       if output_accel > stopAccel:
@@ -138,6 +147,12 @@ class LongControl:
           output_accel *= soft_factor
           # output_accel은 음수이므로, -decel_cap보다 더 큰(덜 음수) 값으로 캡
           output_accel = max(output_accel, -decel_cap)
+
+        # Extra smoothing: limit braking jerk close to standstill.
+        # Prevents sudden brake spikes that can still cause a bump even with decel caps.
+        jerk_limit = float(np.interp(CS.vEgo, [0.0, v_soft], [0.25, 2.0]))  # m/s^3
+        max_delta = jerk_limit * DT_CTRL
+        output_accel = self.last_output_accel + np.clip(output_accel - self.last_output_accel, -max_delta, max_delta)
 
       self.reset()
 

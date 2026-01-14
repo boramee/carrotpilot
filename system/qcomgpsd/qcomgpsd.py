@@ -92,7 +92,11 @@ def try_setup_logs(diag, logs):
 
 @retry(attempts=3, delay=1.0)
 def at_cmd(cmd: str) -> str | None:
-  return subprocess.check_output(f"mmcli -m any --timeout 30 --command='{cmd}'", shell=True, encoding='utf8')
+  # Avoid shell=True: AT commands can contain quotes/semicolons and should be passed verbatim.
+  return subprocess.check_output(
+    ["mmcli", "-m", "any", "--timeout", "30", f"--command={cmd}"],
+    encoding='utf8',
+  )
 
 def gps_enabled() -> bool:
   return "QGPS: 1" in at_cmd("AT+QGPS?")
@@ -131,8 +135,10 @@ def downloader_loop(event):
 
 @retry(attempts=5, delay=0.2, ignore_failure=True)
 def inject_assistance():
-  cmd = f"mmcli -m any --timeout 30 --location-inject-assistance-data={ASSIST_DATA_FILE}"
-  subprocess.check_output(cmd, stderr=subprocess.PIPE, shell=True)
+  subprocess.check_output(
+    ["mmcli", "-m", "any", "--timeout", "30", f"--location-inject-assistance-data={ASSIST_DATA_FILE}"],
+    stderr=subprocess.PIPE,
+  )
   cloudlog.info("successfully loaded assistance data")
 
 @retry(attempts=5, delay=1.0)
@@ -210,7 +216,11 @@ def teardown_quectel(diag):
 def wait_for_modem(cmd="AT+QGPS?"):
   cloudlog.warning("waiting for modem to come up")
   while True:
-    ret = subprocess.call(f"mmcli -m any --timeout 10 --command=\"{cmd}\"", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
+    ret = subprocess.call(
+      ["mmcli", "-m", "any", "--timeout", "10", f"--command={cmd}"],
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL,
+    )
     if ret == 0:
       return
     time.sleep(0.1)

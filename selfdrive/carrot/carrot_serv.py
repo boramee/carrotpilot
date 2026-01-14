@@ -240,9 +240,16 @@ class CarrotServ:
       self.carrotCmdIndex_last = self.carrotCmdIndex
       command_handlers = {
         "DETECT": self._handle_detect_command,
+        # CarrotMan remote param setters (whitelisted)
+        "PARAM": self._handle_param_command,
+        "SETTING": self._handle_param_command,
+        "SET": self._handle_param_command,
+        "SOFTSTOP": self._handle_soft_stop_command,
+        "SOFTSTOPMODE": self._handle_soft_stop_command,
       }
 
-      handler = command_handlers.get(self.carrotCmd)
+      cmd = (self.carrotCmd or "").upper()
+      handler = command_handlers.get(cmd)
       if handler:
         handler(self.carrotArg)
 
@@ -264,6 +271,70 @@ class CarrotServ:
         self.traffic_light_count = int(0.5 / 0.1)
       except ValueError:
         pass
+
+  def _handle_soft_stop_command(self, xArg):
+    # Accept common formats: "ON"/"OFF", "1"/"0"
+    if xArg is None:
+      return
+    val = str(xArg).strip().upper()
+    if val in ("ON", "TRUE", "YES"):
+      self.params.put_int("SoftStopMode", 1)
+      print("carrotCmd: set SoftStopMode=1")
+    elif val in ("OFF", "FALSE", "NO"):
+      self.params.put_int("SoftStopMode", 0)
+      print("carrotCmd: set SoftStopMode=0")
+    else:
+      try:
+        ival = int(float(val))
+      except Exception:
+        return
+      if ival in (0, 1):
+        self.params.put_int("SoftStopMode", ival)
+        print(f"carrotCmd: set SoftStopMode={ival}")
+
+  def _handle_param_command(self, xArg):
+    """
+    CarrotMan -> openpilot params setter.
+    Only whitelists a small set of params for safety.
+
+    Supported formats (examples):
+      - "SoftStopMode=1"
+      - "SoftStopMode:1"
+      - "SoftStopMode,1"
+      - "SoftStopMode 1"
+    """
+    if xArg is None:
+      return
+    s = str(xArg).strip()
+    if not s:
+      return
+
+    # Normalize separators to "key,value"
+    for sep in ("=", ":", " "):
+      if sep in s:
+        parts = [p.strip() for p in s.split(sep, 1)]
+        if len(parts) == 2:
+          key, val = parts[0], parts[1]
+          break
+    else:
+      parts = [p.strip() for p in s.split(",", 1)]
+      if len(parts) != 2:
+        return
+      key, val = parts[0], parts[1]
+
+    allowed_int_params = {
+      "SoftStopMode": (0, 1),
+    }
+    if key not in allowed_int_params:
+      return
+    try:
+      ival = int(float(val))
+    except Exception:
+      return
+    lo, hi = allowed_int_params[key]
+    ival = max(lo, min(hi, ival))
+    self.params.put_int(key, ival)
+    print(f"carrotCmd: set {key}={ival}")
 
   def traffic_light(self, x, y, color, cnf):
     traffic_red = 0

@@ -65,6 +65,8 @@ class LongControl:
     self.readParamCount = 0
     self.stopping_accel = 0
     self.j_lead = 0.0
+    # 소프트 스톱 모드 (0: off, 1: on)
+    self.soft_stop_mode = 0
 
     self.use_accel_pid = False
     if CP.brand == "toyota":
@@ -85,6 +87,7 @@ class LongControl:
     if self.readParamCount >= 100:
       self.readParamCount = 0
       self.stopping_accel = self.params.get_float("StoppingAccel") * 0.01
+      self.soft_stop_mode = int(self.params.get_int("SoftStopMode"))
     elif self.readParamCount == 10:
       if len(self.CP.longitudinalTuning.kpBP) == 1 and len(self.CP.longitudinalTuning.kiBP)==1:
         longitudinalTuningKpV = self.params.get_float("LongTuningKpV") * 0.01
@@ -118,6 +121,16 @@ class LongControl:
       if output_accel > stopAccel:
         output_accel = min(output_accel, 0.0)
         output_accel -= self.CP.stoppingDecelRate * DT_CTRL
+
+      # Soft Stop: 아주 저속 구간에서 브레이크 감속을 완만하게 조정해 정차시 '텅' 느낌 완화
+      if self.soft_stop_mode > 0 and not soft_hold_active and CS.vEgo < 1.5:
+        v_soft = 1.5  # m/s 기준 (~5km/h)
+        # 속도가 줄어들수록 감속 비율을 0.4~1.0 사이에서 선형으로 줄임
+        ratio = max(0.0, min(1.0, CS.vEgo / v_soft))
+        soft_factor = 0.4 + 0.6 * ratio
+        if output_accel < 0.0:
+          output_accel *= soft_factor
+
       self.reset()
 
     elif self.long_control_state == LongCtrlState.starting:

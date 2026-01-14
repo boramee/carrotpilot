@@ -6,17 +6,19 @@ def sudo_write(val: str, path: str) -> None:
     with open(path, 'w') as f:
       f.write(str(val))
   except PermissionError:
-    os.system(f"sudo chmod a+w {path}")
-    try:
-      with open(path, 'w') as f:
-        f.write(str(val))
-    except PermissionError:
-      # fallback for debugfs files
-      os.system(f"sudo su -c 'echo {val} > {path}'")
+    # Avoid shell injection and avoid leaving the file world-writable.
+    # `tee` works for sysfs/debugfs style pseudo-files too.
+    subprocess.run(
+      ["sudo", "tee", path],
+      input=str(val),
+      text=True,
+      stdout=subprocess.DEVNULL,
+      check=True,
+    )
 
 def sudo_read(path: str) -> str:
   try:
-    return subprocess.check_output(f"sudo cat {path}", shell=True, encoding='utf8').strip()
+    return subprocess.check_output(["sudo", "cat", path], encoding='utf8').strip()
   except Exception:
     return ""
 

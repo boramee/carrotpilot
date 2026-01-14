@@ -273,13 +273,14 @@ class CarrotServ:
         pass
 
   def _handle_soft_stop_command(self, xArg):
-    # Accept common formats: "ON"/"OFF", "1"/"0"
+    # Accept common formats: "ON"/"OFF", "1"/"0"/"2"/"3"
     if xArg is None:
       return
     val = str(xArg).strip().upper()
     if val in ("ON", "TRUE", "YES"):
-      self.params.put_int("SoftStopMode", 1)
-      print("carrotCmd: set SoftStopMode=1")
+      # default to recommended level
+      self.params.put_int("SoftStopMode", 2)
+      print("carrotCmd: set SoftStopMode=2")
     elif val in ("OFF", "FALSE", "NO"):
       self.params.put_int("SoftStopMode", 0)
       print("carrotCmd: set SoftStopMode=0")
@@ -288,7 +289,7 @@ class CarrotServ:
         ival = int(float(val))
       except Exception:
         return
-      if ival in (0, 1):
+      if ival in (0, 1, 2, 3):
         self.params.put_int("SoftStopMode", ival)
         print(f"carrotCmd: set SoftStopMode={ival}")
 
@@ -323,7 +324,7 @@ class CarrotServ:
       key, val = parts[0], parts[1]
 
     allowed_int_params = {
-      "SoftStopMode": (0, 1),
+      "SoftStopMode": (0, 3),
     }
     if key not in allowed_int_params:
       return

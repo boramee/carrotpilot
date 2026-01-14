@@ -139,9 +139,12 @@ class LongControl:
         ratio = max(0.0, min(1.0, CS.vEgo / v_soft))
 
         # 속도가 낮을수록 감속을 더 강하게 완화 (0.15~1.0)
-        soft_factor = 0.15 + 0.85 * ratio
-        # 속도가 낮을수록 허용 감속(절대값)을 더 작게 제한 (0.35~1.2 m/s^2)
-        decel_cap = 0.35 + 0.85 * ratio
+        soft_factor = 0.10 + 0.90 * ratio
+        # 초저속(0~약 2km/h)에서 더 부드럽게: 허용 감속(절대값) 하한을 더 낮춤
+        v_creep = 0.6  # m/s (~2km/h)
+        creep_ratio = max(0.0, min(1.0, CS.vEgo / v_creep))
+        # 속도가 낮을수록 허용 감속(절대값)을 더 작게 제한 (0.20~1.2 m/s^2)
+        decel_cap = (0.20 + 0.15 * creep_ratio) + 0.85 * ratio
 
         if output_accel < 0.0:
           output_accel *= soft_factor
@@ -150,7 +153,7 @@ class LongControl:
 
         # Extra smoothing: limit braking jerk close to standstill.
         # Prevents sudden brake spikes that can still cause a bump even with decel caps.
-        jerk_limit = float(np.interp(CS.vEgo, [0.0, v_soft], [0.25, 2.0]))  # m/s^3
+        jerk_limit = float(np.interp(CS.vEgo, [0.0, v_soft], [0.15, 2.0]))  # m/s^3
         max_delta = jerk_limit * DT_CTRL
         output_accel = self.last_output_accel + np.clip(output_accel - self.last_output_accel, -max_delta, max_delta)
 

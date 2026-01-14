@@ -34,7 +34,7 @@ class Beepd:
   def _is_muted(self):
     # SoundVolumeAdjust가 0이면 음소거 상태
     try:
-      return self.params.get_int("SoundVolumeAdjust") == 0
+      return self.params.get_int("SoundVolumeAdjust") == 5
     except Exception:
       return False
 

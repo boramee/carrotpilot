@@ -122,14 +122,22 @@ class LongControl:
         output_accel = min(output_accel, 0.0)
         output_accel -= self.CP.stoppingDecelRate * DT_CTRL
 
-      # Soft Stop: 아주 저속 구간에서 브레이크 감속을 완만하게 조정해 정차시 '텅' 느낌 완화
-      if self.soft_stop_mode > 0 and not soft_hold_active and CS.vEgo < 1.5:
-        v_soft = 1.5  # m/s 기준 (~5km/h)
-        # 속도가 줄어들수록 감속 비율을 0.4~1.0 사이에서 선형으로 줄임
+      # Soft Stop: 정지 직전(아주 저속)에서 감속을 더 완만하게 만들어 '쿵'을 줄임
+      # - 기존: 감속 비율만 줄여서 일부 차량에서 효과가 약할 수 있음
+      # - 개선: 저속 구간을 넓히고(0~약 9km/h), 감속을 스케일링 + 최대 감속(음수) 캡으로 제한
+      if self.soft_stop_mode > 0 and not soft_hold_active and CS.vEgo < 2.5:
+        v_soft = 2.5  # m/s 기준 (~9km/h)
         ratio = max(0.0, min(1.0, CS.vEgo / v_soft))
-        soft_factor = 0.4 + 0.6 * ratio
+
+        # 속도가 낮을수록 감속을 더 강하게 완화 (0.15~1.0)
+        soft_factor = 0.15 + 0.85 * ratio
+        # 속도가 낮을수록 허용 감속(절대값)을 더 작게 제한 (0.35~1.2 m/s^2)
+        decel_cap = 0.35 + 0.85 * ratio
+
         if output_accel < 0.0:
           output_accel *= soft_factor
+          # output_accel은 음수이므로, -decel_cap보다 더 큰(덜 음수) 값으로 캡
+          output_accel = max(output_accel, -decel_cap)
 
       self.reset()
 

@@ -186,6 +186,23 @@ class LongControl:
           # output_accel은 음수이므로, -decel_cap보다 더 큰(덜 음수) 값으로 캡
           output_accel = max(output_accel, -decel_cap)
 
+        # "Creep finish": very low speed, bleed off brake so final stop is gentler.
+        # This mimics the user-observed behavior where slowly rolling into standstill reduces the bump.
+        # Only enable for stronger modes. In Adaptive, reduce the effect on downhill to avoid rolling too far.
+        if output_accel < 0.0 and base_level >= 3 and CS.vEgo < v_creep:
+          creep_ratio2 = creep_ratio * creep_ratio
+          # Keep some braking on downhill (pitch > 0), allow more release on flat/uphill.
+          if level == 4:
+            down = max(0.0, min(0.10, self.pitch))  # rad
+            # 0 (flat/uphill) -> 1.0, 0.10rad downhill -> ~0.55
+            downhill_gate = float(np.clip(1.0 - 4.5 * down, 0.55, 1.0))
+          else:
+            downhill_gate = 1.0
+
+          # At 0 m/s scale ~0.35, at v_creep scale -> 1.0
+          creep_scale = (0.35 + 0.65 * creep_ratio2) * downhill_gate
+          output_accel *= creep_scale
+
         # Extra smoothing: limit braking jerk close to standstill.
         # Prevents sudden brake spikes that can still cause a bump even with decel caps.
         min_jerk = {1: 0.25, 2: 0.18, 3: 0.12}.get(base_level, 0.18)

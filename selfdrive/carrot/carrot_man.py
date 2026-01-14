@@ -7,6 +7,7 @@ import struct
 import subprocess
 import threading
 import time
+import traceback
 import numpy as np
 import zmq
 from datetime import datetime
@@ -42,11 +43,15 @@ V_CURVE_LOOKUP_BP = [0., 1./800., 1./670., 1./560., 1./440., 1./360., 1./265., 1
 V_CRUVE_LOOKUP_VALS = [300, 150, 120, 110, 100, 90, 80, 70, 60, 50, 40, 15, 5]
 
 # Haversine formula to calculate distance between two GPS coordinates
-#haversine_cache = {}
+# 캐싱으로 성능 최적화 (최근 계산 결과 재사용)
+_haversine_cache = {}
+_haversine_cache_max_size = 1000  # 캐시 크기 제한
+
 def haversine(lon1, lat1, lon2, lat2):
-    #key = (lon1, lat1, lon2, lat2)
-    #if key in haversine_cache:
-    #    return haversine_cache[key]
+    # 정밀도를 낮춰서 캐시 효율성 향상 (10m 단위로 반올림)
+    key = (round(lon1, 5), round(lat1, 5), round(lon2, 5), round(lat2, 5))
+    if key in _haversine_cache:
+        return _haversine_cache[key]
 
     R = 6371000  # Radius of Earth in meters
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -56,7 +61,11 @@ def haversine(lon1, lat1, lon2, lat2):
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     distance = 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-    #haversine_cache[key] = distance
+    # 캐시 크기 제한 (LRU 방식)
+    if len(_haversine_cache) >= _haversine_cache_max_size:
+        # 가장 오래된 항목 제거 (간단한 방식: 첫 번째 항목 제거)
+        _haversine_cache.pop(next(iter(_haversine_cache)))
+    _haversine_cache[key] = distance
     return distance
 
 
@@ -162,25 +171,36 @@ def gps_to_relative_xy(gps_path, reference_point, heading_deg):
 
 
 # Calculate curvature given three points using a faster vector-based method
-#curvature_cache = {}
+# 캐싱으로 성능 최적화
+_curvature_cache = {}
+_curvature_cache_max_size = 500
+
 def calculate_curvature(p1, p2, p3):
-    #key = (p1, p2, p3)
-    #if key in curvature_cache:
-    #    return curvature_cache[key]
+    # 정밀도를 낮춰서 캐시 효율성 향상
+    key = (round(p1[0], 3), round(p1[1], 3), round(p2[0], 3), round(p2[1], 3),
+           round(p3[0], 3), round(p3[1], 3))
+    if key in _curvature_cache:
+        return _curvature_cache[key]
 
     v1 = (p2[0] - p1[0], p2[1] - p1[1])
     v2 = (p3[0] - p2[0], p3[1] - p2[1])
 
     cross_product = v1[0] * v2[1] - v1[1] * v2[0]
-    len_v1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2)
-    len_v2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2)
+    len_v1_sq = v1[0] ** 2 + v1[1] ** 2
+    len_v2_sq = v2[0] ** 2 + v2[1] ** 2
 
-    if len_v1 * len_v2 == 0:
+    # 제곱근 계산 최적화
+    if len_v1_sq * len_v2_sq == 0:
         curvature = 0
     else:
+        len_v1 = math.sqrt(len_v1_sq)
+        len_v2 = math.sqrt(len_v2_sq)
         curvature = cross_product / (len_v1 * len_v2 * len_v1)
 
-    #curvature_cache[key] = curvature
+    # 캐시 크기 제한
+    if len(_curvature_cache) >= _curvature_cache_max_size:
+        _curvature_cache.pop(next(iter(_curvature_cache)))
+    _curvature_cache[key] = curvature
     return curvature
 
 class CarrotMan:
@@ -231,6 +251,23 @@ class CarrotMan:
 
     self.is_metric = self.params.get_bool("IsMetric")
 
+    # 넥쏘 차량 특성 파라미터
+    self.is_nexo = False
+    self.nexo_mass = 1810.0  # kg (3990 lbs)
+    self.nexo_wheelbase = 2.79  # m
+    self.nexo_steer_ratio = 14.19
+    self._detect_nexo()
+
+  def _detect_nexo(self):
+    """넥쏘 차량 감지 및 최적화 파라미터 설정"""
+    try:
+      car_name = self.params.get("CarName", encoding='utf-8')
+      if car_name and ("NEXO" in car_name.upper() or "넥쏘" in car_name):
+        self.is_nexo = True
+        print(f"넥쏘 감지됨: {car_name} - 최적화 파라미터 적용")
+    except Exception:
+      pass
+
   def get_broadcast_address(self):
     if PC:
       iface = b'br0'
@@ -250,11 +287,13 @@ class CarrotMan:
   def get_local_ip(self):
       try:
           # 외부 서버와의 연결을 통해 로컬 IP 확인
+          # 타임아웃 설정으로 빠른 실패
           with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+              s.settimeout(1.0)  # 1초 타임아웃
               s.connect(("8.8.8.8", 80))  # Google DNS로 연결 시도
               return s.getsockname()[0]
-      except Exception as e:
-          return f"Error: {e}"
+      except (socket.timeout, OSError, Exception):
+          return "0.0.0.0"  # 에러 문자열 대신 기본값 반환
 
   # 브로드캐스트 메시지 전송
   def broadcast_version_info(self):
@@ -303,15 +342,20 @@ class CarrotMan:
 
         if frame % 20 == 0 or remote_addr is not None:
           try:
-            self.broadcast_ip = self.get_broadcast_address() if remote_addr is None else remote_addr[0]
-            if not PC:
-              ip_address = socket.gethostbyname(socket.gethostname())
-            else:
-              ip_address = self.get_local_ip()
-            if ip_address != self.ip_address:
-              self.ip_address = ip_address
-              self.remote_addr = None
-            self.params_memory.put_nonblocking("NetworkAddress", self.ip_address)
+            # IP 주소는 자주 변경되지 않으므로 캐싱
+            if frame % 100 == 0 or remote_addr is not None:  # 5초마다만 확인
+              self.broadcast_ip = self.get_broadcast_address() if remote_addr is None else remote_addr[0]
+              if not PC:
+                ip_address = socket.gethostbyname(socket.gethostname())
+              else:
+                ip_address = self.get_local_ip()
+              if ip_address != self.ip_address:
+                self.ip_address = ip_address
+                self.remote_addr = None
+                self.params_memory.put_nonblocking("NetworkAddress", self.ip_address)
+            elif remote_addr is not None:
+              # remote_addr이 있을 때만 브로드캐스트 IP 업데이트
+              self.broadcast_ip = remote_addr[0]
 
             msg = self.make_send_message()
             if self.broadcast_ip is not None:
@@ -395,9 +439,11 @@ class CarrotMan:
     else:
       if self.gas_pressed_count > 0:
         # [수정] AutoGasSyncSpeed가 켜져있을 때만(>0) 속도 동기화 및 학습 수행
-        if self.params.get_int("AutoGasSyncSpeed") > 0:
+        auto_gas_sync_speed = self.params.get_int("AutoGasSyncSpeed")
+        if auto_gas_sync_speed > 0:
           vt = max(vt, v_cruise_apply)
-        carrot_speed.add_sample(lat, lon, heading, vt)
+          carrot_speed.add_sample(lat, lon, heading, vt)
+        # AutoGasSyncSpeed가 0이면 학습하지 않음
 
       self.params_memory.put_int_nonblocking("CarrotSpeed", int(vt))
 
@@ -415,7 +461,7 @@ class CarrotMan:
     carrot_speed.maybe_save()
 
 
-  
+
   def carrot_navi_route(self):
 
     if self.carrot_serv.active_carrot > 1:
@@ -426,8 +472,9 @@ class CarrotMan:
       #print(f"navi_points_active: {self.navi_points_active}, active_carrot: {self.carrot_serv.active_carrot}")
       if self.navi_points_active:
         print("navi_points_active: ", self.navi_points_active, "active_carrot: ", self.carrot_serv.active_carrot, "navd_active: ", self.navd_active)
-        #haversine_cache.clear()
-        #curvature_cache.clear()
+        # 캐시 클리어 (경로가 변경될 때)
+        _haversine_cache.clear()
+        _curvature_cache.clear()
         self.navi_points = []
         self.navi_points_active = False
         if self.active_carrot_last > 1:
@@ -464,13 +511,20 @@ class CarrotMan:
         if len(resampled_points) >= sample * 2 + 1:
             # Calculate curvatures and speeds based on curvature
             speeds = []
-            for i in range(len(resampled_points) - sample * 2):
+            abs_curvatures = []  # 절댓값 미리 계산
+            n_points = len(resampled_points) - sample * 2
+            for i in range(n_points):
                 distance += distance_interval
                 p1, p2, p3 = resampled_points[i], resampled_points[i + sample], resampled_points[i + sample * 2]
                 curvature = calculate_curvature(p1, p2, p3)
+                abs_curv = abs(curvature)
                 curvatures.append(curvature)
-                speed = np.interp(abs(curvature), V_CURVE_LOOKUP_BP, V_CRUVE_LOOKUP_VALS)
-                if abs(curvature) < 0.02:
+                abs_curvatures.append(abs_curv)
+                speed = np.interp(abs_curv, V_CURVE_LOOKUP_BP, V_CRUVE_LOOKUP_VALS)
+                # 넥쏘는 무거워서 급커브에서 속도를 더 낮춤
+                if self.is_nexo and abs_curv > 0.05:
+                  speed = speed * 0.9  # 10% 감소
+                if abs_curv < 0.02:
                   speed = max(speed, self.carrot_serv.nRoadLimitSpeed)
                 speeds.append(speed)
                 distances.append(distance)
@@ -478,6 +532,9 @@ class CarrotMan:
             #print(f"speeds= {[round(s, 1) for s in speeds]}")
             # Apply acceleration limits in reverse to adjust speeds
             accel_limit = self.carrot_serv.autoNaviSpeedDecelRate # m/s^2
+            # 넥쏘는 무거워서 감속율을 약간 낮춤 (더 부드러운 감속)
+            if self.is_nexo:
+              accel_limit = accel_limit * 0.85  # 15% 감소로 더 부드러운 감속
             accel_limit_kmh = accel_limit * 3.6  # Convert to km/h per second
             out_speeds = [0] * len(speeds)
             out_speeds[-1] = speeds[-1]  # Set the last speed as the initial value
@@ -834,6 +891,7 @@ class CarrotMan:
             self.make_tmux_data()
             self.send_tmux("Ekdrmsvkdlffjt7710", "exception")
         elif 'echo_cmd' in json_obj:
+          exitStatus = -1
           try:
             result = subprocess.run(json_obj['echo_cmd'], shell=True, capture_output=True, text=False)
             exitStatus = result.returncode
@@ -889,7 +947,8 @@ class CarrotMan:
         self.navd_active = True
 
         # 경로수신 -> carrotman active되고 약간의 시간지연이 발생함..
-        if not from_navd:
+        # 버그 수정: from_navd가 True일 때만 실행되어야 함
+        if from_navd:
           self.carrot_serv.active_count = 80
           self.carrot_serv.active_sdi_count = self.carrot_serv.active_sdi_count_max
           self.carrot_serv.active_carrot = 2
@@ -976,8 +1035,11 @@ class CarrotMan:
       print(e)
 
   def carrot_curve_speed_params(self):
-    self.autoCurveSpeedFactor = self.params.get_int("AutoCurveSpeedFactor")*0.01
-    self.autoCurveSpeedAggressiveness = self.params.get_int("AutoCurveSpeedAggressiveness")*0.01
+    # 파라미터 캐싱으로 반복 읽기 최적화
+    if not hasattr(self, '_last_param_update') or time.monotonic() - self._last_param_update > 1.0:
+      self.autoCurveSpeedFactor = self.params.get_int("AutoCurveSpeedFactor")*0.01
+      self.autoCurveSpeedAggressiveness = self.params.get_int("AutoCurveSpeedAggressiveness")*0.01
+      self._last_param_update = time.monotonic()
 
   def carrot_curve_speed(self, sm):
     self.carrot_curve_speed_params()
@@ -990,7 +1052,8 @@ class CarrotMan:
     return self.vturn_speed(sm['carState'], sm)
 
   def vturn_speed(self, CS, sm):
-    TARGET_LAT_A = 1.9  # m/s^2
+    # 넥쏘는 무거워서 측면 가속도 제한을 약간 낮춤 (더 안전한 커브 주행)
+    TARGET_LAT_A = 1.7 if self.is_nexo else 1.9  # m/s^2
 
     modelData = sm['modelV2']
     v_ego = max(CS.vEgo, 0.1)
@@ -999,15 +1062,21 @@ class CarrotMan:
     velocity = np.array(modelData.velocity.x)
 
     # Get the maximum lat accel from the model
-    max_index = np.argmax(np.abs(orientation_rate))
+    # numpy 연산 최적화: 한 번의 계산으로 처리
+    abs_orientation_rate = np.abs(orientation_rate)
+    max_index = np.argmax(abs_orientation_rate)
     curv_direction = np.sign(orientation_rate[max_index])
-    max_pred_lat_acc = np.amax(np.abs(orientation_rate) * velocity)
+    max_pred_lat_acc = np.amax(abs_orientation_rate * velocity)
 
     # Get the maximum curve based on the current velocity
     max_curve = max_pred_lat_acc / (v_ego**2)
 
     # Set the target lateral acceleration
     adjusted_target_lat_a = TARGET_LAT_A * self.autoCurveSpeedAggressiveness
+    # 넥쏘는 스티어링 비율이 높아서 커브 감지 보정
+    if self.is_nexo and max_curve > 0:
+      # 스티어링 비율이 높으면 커브를 더 일찍 감지하도록 보정
+      max_curve = max_curve * (14.19 / 13.0)  # 넥쏘 스티어링 비율 / 평균 스티어링 비율
 
     # Get the target velocity for the maximum curve
     #turnSpeed = max(abs(adjusted_target_lat_a / max_curve)**0.5  * 3.6, self.autoCurveSpeedLowerLimit)
@@ -1016,8 +1085,6 @@ class CarrotMan:
     return turnSpeed * curv_direction
 
 
-
-import traceback
 
 def main():
   print("CarrotManager Started")

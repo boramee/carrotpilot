@@ -993,16 +993,27 @@ class CarrotServ:
     desired_speed, source = min(speed_n_sources, key=lambda x: x[0])
 
     if CS is not None:
+      # AutoGasTokSpeed 파라미터 읽기 (0이면 엑셀 가속 시 속도 제한)
+      auto_gas_tok_speed = self.params.get_int("AutoGasTokSpeed")
+
       if source != self.source_last:
         self.gas_override_speed = 0
         self.gas_pressed_state = CS.gasPressed
       if CS.vEgo < 0.1 or desired_speed > 150 or source in ["cam", "section", "police"] or CS.brakePressed or road_speed_limit_changed:
         self.gas_override_speed = 0
       elif CS.gasPressed and not self.gas_pressed_state:
-        self.gas_override_speed = max(v_ego_kph, self.gas_override_speed)
+        # AutoGasTokSpeed가 0이면 엑셀 가속 시 현재 속도로 제한
+        if auto_gas_tok_speed == 0:
+          self.gas_override_speed = v_ego_kph  # 현재 속도로 제한
+        else:
+          self.gas_override_speed = max(v_ego_kph, self.gas_override_speed)
       else:
         self.gas_pressed_state = False
       self.source_last = source
+
+      # AutoGasTokSpeed가 0이면 gas_override_speed를 사용하지 않음
+      if auto_gas_tok_speed == 0:
+        self.gas_override_speed = 0
 
       if desired_speed < self.gas_override_speed:
         source = "gas"
@@ -1299,7 +1310,7 @@ class CarrotServ:
 
         self.nPosAngle = self.nPosAnglePhone
         # self.nPosSpeed = self.ve # TODO speed from v_ego
-        self.last_update_gps_time_phone = self.last_calculate_gps_time = now        
+        self.last_update_gps_time_phone = self.last_calculate_gps_time = now
         self.nPosSpeed = float(json.get("gps_speed", 0))
         print(f"phone gps: {self.vpPosPointLatNavi}, {self.vpPosPointLonNavi}, {self.phone_gps_accuracy}, {self.nPosSpeed}")
 

@@ -2,6 +2,7 @@
 import subprocess
 import time
 from cereal import car, messaging
+from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 import threading
 
@@ -9,6 +10,7 @@ AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 
 class Beepd:
   def __init__(self):
+    self.params = Params()
     self.current_alert = AudibleAlert.none
     self.enable_gpio()
     self.startup_beep()
@@ -29,7 +31,17 @@ class Beepd:
                    stdout=subprocess.DEVNULL,
                    encoding='utf8')
 
+  def _is_muted(self):
+    # SoundVolumeAdjust가 0이면 음소거 상태
+    try:
+      return self.params.get_int("SoundVolumeAdjust") == 0
+    except Exception:
+      return False
+
   def _beep(self, on):
+    # 음소거 상태면 비프음 출력하지 않음
+    if self._is_muted():
+      return
     val = "1" if on else "0"
     subprocess.run(f"echo \"{val}\" | sudo tee /sys/class/gpio/gpio42/value",
                    shell=True,

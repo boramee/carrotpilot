@@ -7,6 +7,7 @@ import signal
 import subprocess
 import time
 import glob
+import tempfile
 from typing import NoReturn
 
 import openpilot.system.sentry as sentry
@@ -36,8 +37,23 @@ def clear_apport_folder():
 
 def get_apport_stacktrace(fn):
   try:
-    cmd = f'apport-retrace -s <(cat <(echo "Package: openpilot") "{fn}")'
-    return subprocess.check_output(cmd, shell=True, encoding='utf8', timeout=30, executable='/bin/bash')
+    # Avoid bash process substitution (shell=True) to prevent quoting issues with filenames
+    # and to keep the invocation portable.
+    tmp_fn = None
+    try:
+      with tempfile.NamedTemporaryFile(mode="w", prefix="openpilot-apport-", suffix=".crash", delete=False) as tf:
+        tmp_fn = tf.name
+        tf.write("Package: openpilot\n")
+        with open(fn) as f:
+          shutil.copyfileobj(f, tf)
+
+      return subprocess.check_output(["apport-retrace", "-s", tmp_fn], encoding='utf8', timeout=30)
+    finally:
+      if tmp_fn is not None:
+        try:
+          os.remove(tmp_fn)
+        except OSError:
+          pass
   except subprocess.CalledProcessError:
     return "Error getting stacktrace"
   except subprocess.TimeoutExpired:

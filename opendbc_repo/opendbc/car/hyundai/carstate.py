@@ -254,6 +254,10 @@ class CarState(CarStateBase):
       ret.cruiseState.standstill = cp_cruise.vl["SCC11"]["SCCInfoDisplay"] == 4.
       ret.cruiseState.nonAdaptive = cp_cruise.vl["SCC11"]["SCCInfoDisplay"] == 2.  # Shows 'Cruise Control' on dash
       ret.cruiseState.speed = cp_cruise.vl["SCC11"]["VSetDis"] * speed_conv
+      if self.CP.carFingerprint in NEXO_CARS:
+        # limit 모드로 인한 nonAdaptive/available 차단을 무시
+        self.main_enabled = ret.cruiseState.available = True
+        ret.cruiseState.nonAdaptive = False
 
       ret.pcmCruiseGap = cp_cruise.vl["SCC11"]["TauGapSet"]
 

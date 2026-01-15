@@ -239,9 +239,10 @@ class CarState(CarStateBase):
 
     # cruise state
     if self.CP.openpilotLongitudinalControl:
-      if self.CP.carFingerprint in NEXO_CARS:
-        # 넥쏘 모드 버튼의 순정 사이클을 따라가기 위해 SCC 메인 상태를 신뢰
-        self.main_enabled = cp_cruise.vl["SCC11"]["MainMode_ACC"] == 1
+      # 넥쏘에서 크루즈 버튼 두 번 누르면 limit이 생기는 문제 회피
+      # main_enabled가 False가 되면 자동으로 True로 복구
+      if self.CP.carFingerprint in NEXO_CARS and not self.main_enabled:
+        self.main_enabled = True
       # These are not used for engage/disengage since openpilot keeps track of state using the buttons
       ret.cruiseState.available = self.main_enabled #cp.vl["TCS13"]["ACCEnable"] == 0
       ret.cruiseState.enabled = cp.vl["TCS13"]["ACC_REQ"] == 1

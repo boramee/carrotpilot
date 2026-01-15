@@ -27,6 +27,7 @@ BUTTONS_DICT = {Buttons.RES_ACCEL: ButtonType.accelCruise, Buttons.SET_DECEL: Bu
                 Buttons.GAP_DIST: ButtonType.gapAdjustCruise, Buttons.CANCEL: ButtonType.cancel, Buttons.LFA_BUTTON: ButtonType.lfaButton}
 
 GearShifter = structs.CarState.GearShifter
+NEXO_CARS = (CAR.HYUNDAI_NEXO, CAR.HYUNDAI_NEXO_1ST_GEN)
 
 
 NUMERIC_TO_TZ = {
@@ -240,7 +241,7 @@ class CarState(CarStateBase):
     if self.CP.openpilotLongitudinalControl:
       # 넥쏘에서 크루즈 버튼 두 번 누르면 limit이 생기는 문제 회피
       # main_enabled가 False가 되면 자동으로 True로 복구
-      if self.CP.carFingerprint in (CAR.HYUNDAI_NEXO,) and not self.main_enabled:
+      if self.CP.carFingerprint in NEXO_CARS and not self.main_enabled:
         self.main_enabled = True
       # These are not used for engage/disengage since openpilot keeps track of state using the buttons
       ret.cruiseState.available = self.main_enabled #cp.vl["TCS13"]["ACCEnable"] == 0
@@ -294,7 +295,7 @@ class CarState(CarStateBase):
       gear = cp.vl["LVR12"]["CF_Lvr_Gear"]
       ret.gearStep = cp.vl["LVR11"]["CF_Lvr_GearInf"]
 
-    if not self.CP.carFingerprint in (CAR.HYUNDAI_NEXO):
+    if self.CP.carFingerprint not in NEXO_CARS:
       ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
     else:
       gear = cp.vl["ELECT_GEAR"]["Elect_Gear_Shifter"]
@@ -396,7 +397,7 @@ class CarState(CarStateBase):
 
     # 넥쏘에서 크루즈 버튼 두 번 누르면 limit이 생기는 문제 회피
     # main 버튼 토글을 무시하고 항상 main_enabled를 유지
-    if not self.CP.carFingerprint in (CAR.HYUNDAI_NEXO,):
+    if self.CP.carFingerprint not in NEXO_CARS:
       if prev_main_buttons == 0 and self.main_buttons[-1] != 0:
         self.main_enabled = not self.main_enabled
 
@@ -500,7 +501,7 @@ class CarState(CarStateBase):
       self.main_enabled = True
     # 넥쏘에서 크루즈 버튼 두 번 누르면 limit이 생기는 문제 회피
     # main_enabled가 False가 되면 자동으로 True로 복구
-    if self.CP.carFingerprint in (CAR.HYUNDAI_NEXO,) and not self.main_enabled:
+    if self.CP.carFingerprint in NEXO_CARS and not self.main_enabled:
       self.main_enabled = True
     # CAN FD cars enable on main button press, set available if no TCS faults preventing engagement
     ret.cruiseState.available = self.main_enabled #cp.vl["TCS"]["ACCEnable"] == 0
@@ -640,7 +641,7 @@ class CarState(CarStateBase):
     self.main_buttons.extend(cp.vl_all[self.cruise_btns_msg_canfd]["ADAPTIVE_CRUISE_MAIN_BTN"])
     # 넥쏘에서 크루즈 버튼 두 번 누르면 limit이 생기는 문제 회피
     # main 버튼 토글을 무시하고 항상 main_enabled를 유지
-    if not self.CP.carFingerprint in (CAR.HYUNDAI_NEXO,):
+    if self.CP.carFingerprint not in NEXO_CARS:
       if self.main_buttons[-1] != prev_main_buttons and not self.main_buttons[-1]: # and self.CP.openpilotLongitudinalControl: #carrot
         self.main_enabled = not self.main_enabled
         print("main_enabled = {}".format(self.main_enabled))

@@ -239,10 +239,9 @@ class CarState(CarStateBase):
 
     # cruise state
     if self.CP.openpilotLongitudinalControl:
-      # 넥쏘에서 크루즈 버튼 두 번 누르면 limit이 생기는 문제 회피
-      # main_enabled가 False가 되면 자동으로 True로 복구
-      if self.CP.carFingerprint in NEXO_CARS and not self.main_enabled:
-        self.main_enabled = True
+      if self.CP.carFingerprint in NEXO_CARS:
+        # 넥쏘 모드 버튼의 순정 사이클을 따라가기 위해 SCC 메인 상태를 신뢰
+        self.main_enabled = cp_cruise.vl["SCC11"]["MainMode_ACC"] == 1
       # These are not used for engage/disengage since openpilot keeps track of state using the buttons
       ret.cruiseState.available = self.main_enabled #cp.vl["TCS13"]["ACCEnable"] == 0
       ret.cruiseState.enabled = cp.vl["TCS13"]["ACC_REQ"] == 1
@@ -254,9 +253,8 @@ class CarState(CarStateBase):
       ret.cruiseState.standstill = cp_cruise.vl["SCC11"]["SCCInfoDisplay"] == 4.
       ret.cruiseState.nonAdaptive = cp_cruise.vl["SCC11"]["SCCInfoDisplay"] == 2.  # Shows 'Cruise Control' on dash
       ret.cruiseState.speed = cp_cruise.vl["SCC11"]["VSetDis"] * speed_conv
-      if self.CP.carFingerprint in NEXO_CARS:
-        # limit 모드로 인한 nonAdaptive/available 차단을 무시
-        self.main_enabled = ret.cruiseState.available = True
+      if self.CP.carFingerprint in NEXO_CARS and ret.cruiseState.available:
+        # limit 모드에서도 wrongCruiseMode로 막히지 않게 처리
         ret.cruiseState.nonAdaptive = False
 
       ret.pcmCruiseGap = cp_cruise.vl["SCC11"]["TauGapSet"]

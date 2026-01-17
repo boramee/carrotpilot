@@ -128,6 +128,7 @@ class CarController(CarControllerBase):
     self.activeCarrot = 0
     self.camera_scc_params = Params().get_int("HyundaiCameraSCC")
     self.is_ldws_car = Params().get_bool("IsLdwsCar")
+    self.soft_stop_mode = 0
 
     self.steerDeltaUpOrg = self.steerDeltaUp = self.steerDeltaUpLC = self.params.STEER_DELTA_UP
     self.steerDeltaDownOrg = self.steerDeltaDown = self.steerDeltaDownLC = self.params.STEER_DELTA_DOWN
@@ -174,6 +175,7 @@ class CarController(CarControllerBase):
 
       self.canfd_debug = params.get_int("CanfdDebug")
       self.camera_scc_params = params.get_int("HyundaiCameraSCC")
+      self.soft_stop_mode = params.get_int("SoftStopMode")
 
     actuators = CC.actuators
     hud_control = CC.hudControl
@@ -266,6 +268,14 @@ class CarController(CarControllerBase):
     # accel + longitudinal
     accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
     stopping = actuators.longControlState == LongCtrlState.stopping
+    # Nexo: Reduce final-stop "bump" by asserting StopReq slightly earlier while still tracking accel.
+    # Stock SCC behavior often raises StopReq below ~1 m/s and continues ramping with jerk limits.
+    # Gate behind SoftStopLevel(>=4) so it's opt-in via Carrot settings.
+    pre_stop_req = (self.soft_stop_mode >= 4 and
+                    self.CP.carFingerprint in (CAR.HYUNDAI_NEXO, CAR.HYUNDAI_NEXO_1ST_GEN) and
+                    CC.longActive and not CS.out.standstill and
+                    CS.out.vEgoRaw < 1.0 and accel < -0.05)
+    stopping = stopping or pre_stop_req
     set_speed_in_units = hud_control.setSpeed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH)
 
     # HUD messages

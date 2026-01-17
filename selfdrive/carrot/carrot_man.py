@@ -383,7 +383,6 @@ class CarrotMan:
     else:
       self.v_cruise_change = 0
       return
-    
     v_cruise_apply = max(min(CS.vCruise, v_ego_kph), 20)
     vt_last = self.params_memory.get_int("CarrotSpeed")
     if vt_last != 0:

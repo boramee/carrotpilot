@@ -31,8 +31,15 @@ class Beepd:
                    stdout=subprocess.DEVNULL,
                    encoding='utf8')
 
+  def _is_muted(self):
+    # SoundVolumeAdjust가 0이면 음소거 상태
+    try:
+      return self.params.get_int("SoundVolumeAdjust") <= 5
+    except Exception:
+      return False
+
   def _beep(self, on):
-    if self.params.get_int("SoundVolumeAdjust") <= 5:
+    if self._is_muted():
       on = False
     val = "1" if on else "0"
     subprocess.run(f"echo \"{val}\" | sudo tee /sys/class/gpio/gpio42/value",

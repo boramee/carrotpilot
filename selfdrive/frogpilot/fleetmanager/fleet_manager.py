@@ -100,50 +100,80 @@ def download_ecamera(route, segment):
   print("download_route=", route, file_name, segment)
   return send_from_directory(file_name, "ecamera.hevc", as_attachment=True)
         
+def _get_ftp_setting(params: Params, param_key: str, env_key: str, default=None):
+  value = params.get(param_key, encoding="utf8")
+  if value is None or value == "":
+    value = os.getenv(env_key, default)
+  return value
+
+
+def _get_ftp_port(params: Params):
+  value = _get_ftp_setting(params, "CarrotFtpPort", "CARROT_FTP_PORT", "21")
+  if value is None or value == "":
+    return None
+  try:
+    return int(value)
+  except ValueError:
+    return None
+
+
+def get_ftp_config():
+  params = Params()
+  return {
+    "host": _get_ftp_setting(params, "CarrotFtpHost", "CARROT_FTP_HOST"),
+    "port": _get_ftp_port(params),
+    "username": _get_ftp_setting(params, "CarrotFtpUser", "CARROT_FTP_USER"),
+    "password": _get_ftp_setting(params, "CarrotFtpPassword", "CARROT_FTP_PASSWORD"),
+    "base_dir": _get_ftp_setting(params, "CarrotFtpBaseDir", "CARROT_FTP_BASE_DIR", "routes"),
+  }
+
+
 def upload_folder_to_ftp(local_folder, directory, remote_path):
-    from tqdm import tqdm
-    ftp_server = "shind0.synology.me"
-    ftp_port = 8021
-    ftp_username = "carrotpilot"
-    ftp_password = "Ekdrmsvkdlffjt7710"
-    ftp = FTP()
-    ftp.connect(ftp_server, ftp_port)
-    ftp.login(ftp_username, ftp_password)
+  from tqdm import tqdm
+  ftp_config = get_ftp_config()
+  if not ftp_config["host"] or not ftp_config["port"] or not ftp_config["username"] or not ftp_config["password"]:
+    print("FTP config missing: set CarrotFtpHost/Port/User/Password or CARROT_FTP_* env vars")
+    return False
 
-    ftp.cwd("routes")
+  ftp = FTP()
+  ftp.connect(ftp_config["host"], ftp_config["port"])
+  ftp.login(ftp_config["username"], ftp_config["password"])
 
-    try:
-        def create_path(path):
-            try:
-                ftp.mkd(path)
-            except:
-                pass
-            ftp.cwd(path)
+  if ftp_config["base_dir"]:
+    ftp.cwd(ftp_config["base_dir"])
 
-        for part in [directory, remote_path]:
-            create_path(part)
+  try:
+    def create_path(path):
+      try:
+        ftp.mkd(path)
+      except:
+        pass
+      ftp.cwd(path)
 
-        files = []
-        for root, _, filenames in os.walk(local_folder):
-            for filename in filenames:
-                if filename in ['rlog.zst', 'qcamera.ts']:
-                    files.append(os.path.join(root, filename))
+    for part in [directory, remote_path]:
+      create_path(part)
 
-        with tqdm(total=len(files), desc="Uploading Files", unit="file") as pbar:
-            for local_file in files:
-                filename = os.path.basename(local_file)
-                try:
-                    with open(local_file, 'rb') as f:
-                        ftp.storbinary(f'STOR {filename}', f)
-                    pbar.update(1)
-                except Exception as e:
-                    print(f"Failed to upload {local_file}: {e}")
+    files = []
+    for root, _, filenames in os.walk(local_folder):
+      for filename in filenames:
+        if filename in ['rlog.zst', 'qcamera.ts']:
+          files.append(os.path.join(root, filename))
 
-        ftp.quit()
-        return True
-    except Exception as e:
-        print(f"FTP Upload Error: {e}")
-        return False
+    with tqdm(total=len(files), desc="Uploading Files", unit="file") as pbar:
+      for local_file in files:
+        filename = os.path.basename(local_file)
+        try:
+          with open(local_file, 'rb') as f:
+            ftp.storbinary(f'STOR {filename}', f)
+          pbar.update(1)
+        except Exception as e:
+          print(f"Failed to upload {local_file}: {e}")
+
+    ftp.quit()
+    return True
+  except Exception as e:
+    print(f"FTP Upload Error: {e}")
+    return False
         
 
 @app.route("/folder-info")

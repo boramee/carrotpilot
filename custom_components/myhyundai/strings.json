@@ -1,0 +1,77 @@
+{
+  "title": "MyHyundai",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to MyHyundai",
+        "description": "Enter your MyHyundai account details.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "pin": "PIN (optional)"
+        }
+      },
+      "vehicle": {
+        "title": "Select vehicle",
+        "data": {
+          "vehicle_id": "Vehicle"
+        }
+      }
+    },
+    "error": {
+      "auth": "Authentication failed",
+      "otp_required": "OTP is required for this account",
+      "no_vehicles": "No vehicles found on this account",
+      "unknown": "Unexpected error"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "odometer": {
+        "name": "Odometer"
+      },
+      "total_driving_range": {
+        "name": "Total driving range"
+      },
+      "fuel_level": {
+        "name": "Fuel level"
+      },
+      "car_battery": {
+        "name": "Car battery"
+      },
+      "ev_battery": {
+        "name": "EV battery"
+      },
+      "air_temperature": {
+        "name": "Air temperature"
+      },
+      "last_updated": {
+        "name": "Last updated"
+      }
+    },
+    "binary_sensor": {
+      "engine_running": {
+        "name": "Engine running"
+      },
+      "hood_open": {
+        "name": "Hood open"
+      },
+      "trunk_open": {
+        "name": "Trunk open"
+      }
+    },
+    "lock": {
+      "door_lock": {
+        "name": "Door lock"
+      }
+    },
+    "button": {
+      "remote_start": {
+        "name": "Remote start"
+      },
+      "remote_stop": {
+        "name": "Remote stop"
+      }
+    }
+  }
+}

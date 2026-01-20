@@ -2,17 +2,31 @@
 """
 Rename rlog*.zst files to yyyymmddhhmiss.zst.
 
-Timestamp is taken from each file's modification time.
+Timestamp is taken from wallTimeNanos inside the rlog.
 """
 from __future__ import annotations
 
 import argparse
+import bz2
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
 
-def _format_timestamp(ts: float, use_utc: bool) -> str:
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import capnp
+import zstandard as zstd
+
+from cereal import log as capnp_log
+
+ZSTD_MAGIC = b"\x28\xB5\x2F\xFD"
+
+
+def _format_timestamp_from_nanos(ts_nanos: int, use_utc: bool) -> str:
+    ts = ts_nanos / 1e9
     if use_utc:
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     else:
@@ -29,6 +43,38 @@ def _unique_target(directory: Path, base: str, suffix: str = ".zst") -> Path:
         if not candidate.exists():
             return candidate
     raise RuntimeError(f"Unable to find unique name for {base}{suffix}")
+
+
+def _decompress_stream(data: bytes) -> bytes:
+    dctx = zstd.ZstdDecompressor()
+    with dctx.stream_reader(data) as reader:
+        return reader.read()
+
+
+def _read_log_bytes(path: Path) -> bytes:
+    data = path.read_bytes()
+    ext = path.suffix.lower()
+    if ext == ".bz2" or data.startswith(b"BZh9"):
+        return bz2.decompress(data)
+    if ext == ".zst" or data.startswith(ZSTD_MAGIC):
+        return _decompress_stream(data)
+    return data
+
+
+def _extract_wall_time_nanos(path: Path) -> int:
+    data = _read_log_bytes(path)
+    try:
+        events = capnp_log.Event.read_multiple_bytes(data)
+        for event in events:
+            which = event.which()
+            if which in ("initData", "clocks", "boot"):
+                wall_time = getattr(event, which).wallTimeNanos
+                if wall_time:
+                    return int(wall_time)
+    except capnp.KjException as exc:
+        raise RuntimeError(f"Corrupted log data in {path.name}") from exc
+
+    raise RuntimeError(f"No wallTimeNanos found in {path.name}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,9 +113,16 @@ def main() -> int:
         print(f"No matching files in {target_dir}")
         return 0
 
+    errors = 0
     for path in files:
-        ts = path.stat().st_mtime
-        base = _format_timestamp(ts, args.utc)
+        try:
+            wall_time_nanos = _extract_wall_time_nanos(path)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            errors += 1
+            continue
+
+        base = _format_timestamp_from_nanos(wall_time_nanos, args.utc)
         dest = _unique_target(target_dir, base)
         if args.dry_run:
             print(f"DRY-RUN: {path.name} -> {dest.name}")
@@ -77,7 +130,7 @@ def main() -> int:
             path.rename(dest)
             print(f"{path.name} -> {dest.name}")
 
-    return 0
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

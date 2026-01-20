@@ -5,6 +5,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.common.params import Params
+from openpilot.common.conversions import Conversions as CV
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
@@ -65,6 +66,11 @@ class LongControl:
     self.readParamCount = 0
     self.stopping_accel = 0
     self.j_lead = 0.0
+    self.soft_stop_enabled = False
+    self.soft_stop_speed1 = 0.0
+    self.soft_stop_speed2 = 0.0
+    self.soft_stop_accel_2 = 0.0
+    self.soft_stop_accel_3 = 0.0
 
     self.use_accel_pid = False
     if CP.brand == "toyota":
@@ -72,6 +78,32 @@ class LongControl:
 
   def reset(self):
     self.pid.reset()
+
+  def _get_soft_stop_accel(self, v_ego, base_stop_accel):
+    if not self.soft_stop_enabled:
+      return base_stop_accel
+
+    speed1 = max(self.soft_stop_speed1, self.soft_stop_speed2)
+    speed2 = min(self.soft_stop_speed1, self.soft_stop_speed2)
+    if speed1 <= 0.0:
+      return base_stop_accel
+
+    stage2_accel = self.soft_stop_accel_2 if self.soft_stop_accel_2 < 0.0 else base_stop_accel
+    stage3_accel = self.soft_stop_accel_3 if self.soft_stop_accel_3 < 0.0 else stage2_accel
+
+    if v_ego > speed1:
+      return base_stop_accel
+    if v_ego > speed2:
+      return stage2_accel
+    return stage3_accel
+
+  def _rate_limit_stop_accel(self, output_accel, target_stop_accel, rate):
+    if output_accel > target_stop_accel:
+      output_accel = min(output_accel, 0.0)
+      output_accel = max(output_accel - rate * DT_CTRL, target_stop_accel)
+    elif output_accel < target_stop_accel:
+      output_accel = min(output_accel + rate * DT_CTRL, target_stop_accel)
+    return output_accel
 
   def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState):
 
@@ -85,6 +117,11 @@ class LongControl:
     if self.readParamCount >= 100:
       self.readParamCount = 0
       self.stopping_accel = self.params.get_float("StoppingAccel") * 0.01
+      self.soft_stop_enabled = self.params.get_int("SoftStopEnable") > 0
+      self.soft_stop_speed1 = self.params.get_int("SoftStopSpeed1") * CV.KPH_TO_MS
+      self.soft_stop_speed2 = self.params.get_int("SoftStopSpeed2") * CV.KPH_TO_MS
+      self.soft_stop_accel_2 = self.params.get_float("SoftStopAccel2") * 0.01
+      self.soft_stop_accel_3 = self.params.get_float("SoftStopAccel3") * 0.01
     elif self.readParamCount == 10:
       if len(self.CP.longitudinalTuning.kpBP) == 1 and len(self.CP.longitudinalTuning.kiBP)==1:
         longitudinalTuningKpV = self.params.get_float("LongTuningKpV") * 0.01
@@ -115,9 +152,9 @@ class LongControl:
         output_accel = self.CP.stopAccel
 
       stopAccel = self.stopping_accel if self.stopping_accel < 0.0 else self.CP.stopAccel
-      if output_accel > stopAccel:
-        output_accel = min(output_accel, 0.0)
-        output_accel -= self.CP.stoppingDecelRate * DT_CTRL
+      stopAccel = self._get_soft_stop_accel(CS.vEgo, stopAccel)
+      if not soft_hold_active:
+        output_accel = self._rate_limit_stop_accel(output_accel, stopAccel, self.CP.stoppingDecelRate)
       self.reset()
 
     elif self.long_control_state == LongCtrlState.starting:

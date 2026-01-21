@@ -65,6 +65,7 @@ class LongControl:
     self.readParamCount = 0
     self.stopping_accel = 0
     self.j_lead = 0.0
+    self.soft_stop_level = 0
 
     self.use_accel_pid = False
     if CP.brand == "toyota":
@@ -85,6 +86,8 @@ class LongControl:
     if self.readParamCount >= 100:
       self.readParamCount = 0
       self.stopping_accel = self.params.get_float("StoppingAccel") * 0.01
+      self.soft_stop_level = int(self.params.get_float("SoftStopLevel"))
+      self.soft_stop_level = max(0, min(10, self.soft_stop_level))
     elif self.readParamCount == 10:
       if len(self.CP.longitudinalTuning.kpBP) == 1 and len(self.CP.longitudinalTuning.kiBP)==1:
         longitudinalTuningKpV = self.params.get_float("LongTuningKpV") * 0.01
@@ -116,8 +119,16 @@ class LongControl:
 
       stopAccel = self.stopping_accel if self.stopping_accel < 0.0 else self.CP.stopAccel
       if output_accel > stopAccel:
+        decel_rate = self.CP.stoppingDecelRate
+        if self.soft_stop_level > 0 and not soft_hold_active:
+          level_frac = self.soft_stop_level / 10.0
+          soft_stop_speed = 1.0
+          if CS.vEgo < soft_stop_speed:
+            min_scale = 1.0 - 0.7 * level_frac
+            rate_scale = np.interp(CS.vEgo, [0.0, soft_stop_speed], [min_scale, 1.0])
+            decel_rate *= rate_scale
         output_accel = min(output_accel, 0.0)
-        output_accel -= self.CP.stoppingDecelRate * DT_CTRL
+        output_accel -= decel_rate * DT_CTRL
       self.reset()
 
     elif self.long_control_state == LongCtrlState.starting:

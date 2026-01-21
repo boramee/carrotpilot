@@ -8,7 +8,7 @@ import traceback
 from cereal import log
 import cereal.messaging as messaging
 import openpilot.system.sentry as sentry
-from openpilot.common.params import Params, ParamKeyType
+from openpilot.common.params import Params, ParamKeyType, UnknownKeyName
 from openpilot.common.text_window import TextWindow
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.manager.helpers import unblock_stdout, write_onroad_params, save_bootlog
@@ -192,6 +192,11 @@ def get_default_params():
 def set_default_params():
   params = Params()
   default_params = get_default_params()
+  try:
+    params.check_key("SoftStopLevel")
+  except UnknownKeyName:
+    default_params = [item for item in default_params if item[0] != "SoftStopLevel"]
+    cloudlog.warning("SoftStopLevel param not registered, skipping default")
   try:
     default_params.remove(("GMapKey", "0"))
     default_params.remove(("CompletedTrainingVersion", "0"))

@@ -4,7 +4,7 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
@@ -66,6 +66,7 @@ class LongControl:
     self.stopping_accel = 0
     self.j_lead = 0.0
     self.soft_stop_level = 0
+    self.soft_stop_level_available = True
 
     self.use_accel_pid = False
     if CP.brand == "toyota":
@@ -86,8 +87,13 @@ class LongControl:
     if self.readParamCount >= 100:
       self.readParamCount = 0
       self.stopping_accel = self.params.get_float("StoppingAccel") * 0.01
-      self.soft_stop_level = int(self.params.get_float("SoftStopLevel"))
-      self.soft_stop_level = max(0, min(10, self.soft_stop_level))
+      if self.soft_stop_level_available:
+        try:
+          self.soft_stop_level = int(self.params.get_float("SoftStopLevel"))
+          self.soft_stop_level = max(0, min(10, self.soft_stop_level))
+        except UnknownKeyName:
+          self.soft_stop_level_available = False
+          self.soft_stop_level = 0
     elif self.readParamCount == 10:
       if len(self.CP.longitudinalTuning.kpBP) == 1 and len(self.CP.longitudinalTuning.kiBP)==1:
         longitudinalTuningKpV = self.params.get_float("LongTuningKpV") * 0.01

@@ -2,7 +2,7 @@
 
 ## `analyze_carrot_log.py`
 
-Offline analyzer that reads local route logs (`rlog/qlog`) and produces tuning suggestions for:
+Offline analyzer that reads route logs (`rlog/qlog`) and produces tuning suggestions for:
 
 - `SteerActuatorDelay`
 - `LongActuatorDelay`
@@ -14,15 +14,15 @@ It is intended for iterative, data-driven tuning with real driving logs.
 ### Usage
 
 ```bash
-PYTHONPATH=/workspace python3 tools/tuning/analyze_carrot_log.py "<log-file> [<log-file> ...]"
+python3 tools/tuning/analyze_carrot_log.py "<log-or-route-identifier>"
 ```
 
 Examples:
 
 ```bash
-PYTHONPATH=/workspace python3 tools/tuning/analyze_carrot_log.py "/path/to/rlog.bz2"
-PYTHONPATH=/workspace python3 tools/tuning/analyze_carrot_log.py "/path/to/seg0.rlog.bz2" "/path/to/seg1.rlog.bz2"
-PYTHONPATH=/workspace python3 tools/tuning/analyze_carrot_log.py "/path/to/rlog.bz2" --json-out /tmp/gv70_tuning.json
+python3 tools/tuning/analyze_carrot_log.py "/path/to/rlog.bz2"
+python3 tools/tuning/analyze_carrot_log.py "a2a0ccea32023010|2023-07-27--13-01-19/4"
+python3 tools/tuning/analyze_carrot_log.py "a2a0ccea32023010|2023-07-27--13-01-19/4" --json-out /tmp/gv70_tuning.json
 ```
 
 ### Notes

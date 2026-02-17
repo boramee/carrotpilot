@@ -2,16 +2,19 @@
 from __future__ import annotations
 
 import argparse
-import bz2
 import json
 import math
-import os
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-from cereal import log as capnp_log
+IMPORT_ERROR: str | None = None
+try:
+  from openpilot.tools.lib.logreader import LogReader
+except ModuleNotFoundError as e:
+  LogReader = None
+  IMPORT_ERROR = str(e)
 
 
 @dataclass
@@ -80,34 +83,6 @@ def clamp(v: float, lo: float, hi: float) -> float:
   return max(lo, min(hi, v))
 
 
-def read_log_file(path: str) -> list[Any]:
-  if not os.path.exists(path):
-    raise FileNotFoundError(f"Log file not found: {path}")
-
-  with open(path, "rb") as f:
-    dat = f.read()
-
-  if path.endswith(".bz2") or dat.startswith(b"BZh"):
-    dat = bz2.decompress(dat)
-  elif path.endswith(".zst") or dat.startswith(b"\x28\xB5\x2F\xFD"):
-    try:
-      import zstandard as zstd
-    except ModuleNotFoundError as e:
-      raise ModuleNotFoundError("zstandard is required to read .zst logs") from e
-    dctx = zstd.ZstdDecompressor()
-    dat = dctx.decompress(dat)
-
-  return list(capnp_log.Event.read_multiple_bytes(dat))
-
-
-def load_events(paths: list[str]) -> list[Any]:
-  events: list[Any] = []
-  for p in paths:
-    events.extend(read_log_file(p))
-  events.sort(key=lambda e: e.logMonoTime)
-  return events
-
-
 def estimate_delay_seconds(x: np.ndarray, y: np.ndarray, dt: float, max_delay: float) -> tuple[float | None, float | None]:
   if x.size < 50 or y.size < 50:
     return None, None
@@ -150,8 +125,8 @@ def get_lateral_state(controls_state) -> tuple[str, Any]:
   return state_name, getattr(lcs, state_name)
 
 
-def analyze(log_files: list[str], min_speed: float) -> AnalysisResult:
-  events = load_events(log_files)
+def analyze(identifier: str, min_speed: float) -> AnalysisResult:
+  lr = LogReader(identifier, sort_by_time=True)
 
   last_car_state = None
   last_controls_state = None
@@ -165,7 +140,7 @@ def analyze(log_files: list[str], min_speed: float) -> AnalysisResult:
 
   rows: list[dict[str, float | bool]] = []
 
-  for msg in events:
+  for msg in lr:
     which = msg.which()
     if which == "carState":
       last_car_state = msg.carState
@@ -252,8 +227,6 @@ def analyze(log_files: list[str], min_speed: float) -> AnalysisResult:
 
   t = np.array([r["t"] for r in rows], dtype=float)
   dt = float(np.median(np.diff(t)))
-  if not np.isfinite(dt) or dt <= 0.0:
-    dt = 0.01
   duration = float(t[-1] - t[0])
 
   v_ego = np.array([r["vEgo"] for r in rows], dtype=float)
@@ -415,24 +388,32 @@ def print_human(result: AnalysisResult):
 
 
 def main():
+  if LogReader is None:
+    raise SystemExit(
+      "Failed to import LogReader dependencies.\n"
+      f"Import error: {IMPORT_ERROR}\n"
+      "Run from the openpilot environment with required Python deps (including capnp),\n"
+      "for example:\n"
+      "  PYTHONPATH=/workspace python3 tools/tuning/analyze_carrot_log.py <identifier>\n"
+    )
+
   parser = argparse.ArgumentParser(
     description="Carrot Pilot log based GV70 tuning helper",
     formatter_class=argparse.RawTextHelpFormatter,
   )
   parser.add_argument(
-    "log_files",
-    nargs="+",
+    "identifier",
     help=(
-      "Local rlog/qlog files\n"
+      "LogReader identifier\n"
       "e.g. /path/to/rlog.bz2\n"
-      "e.g. /path/seg0.rlog.bz2 /path/seg1.rlog.bz2\n"
+      "e.g. a2a0ccea32023010|2023-07-27--13-01-19/4\n"
     ),
   )
   parser.add_argument("--min-speed", type=float, default=8.0, help="Minimum analysis speed in m/s (default: 8.0)")
   parser.add_argument("--json-out", type=str, default="", help="Path to write JSON result")
   args = parser.parse_args()
 
-  result = analyze(args.log_files, min_speed=args.min_speed)
+  result = analyze(args.identifier, min_speed=args.min_speed)
   print_human(result)
 
   if args.json_out:

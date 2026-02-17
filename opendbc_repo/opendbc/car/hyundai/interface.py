@@ -226,11 +226,6 @@ class CarInterface(CarInterfaceBase):
 
     if candidate == CAR.KIA_OPTIMA_G4_FL:
       ret.steerActuatorDelay = 0.2
-    elif candidate in (CAR.GENESIS_GV70_1ST_GEN, CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN, CAR.GENESIS_GV70_EV_1ST_GEN):
-      # GV70 family responds better to slightly higher actuator delay and a softer steering limit timer.
-      ret.steerActuatorDelay = 0.14
-      ret.steerLimitTimer = 0.5
-      ret.longitudinalActuatorDelay = 0.35
 
     # Dashcam cars are missing a test route, or otherwise need validation
     # TODO: Optima Hybrid 2017 uses a different SCC12 checksum

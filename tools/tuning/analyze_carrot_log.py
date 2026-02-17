@@ -9,12 +9,7 @@ from typing import Any
 
 import numpy as np
 
-IMPORT_ERROR: str | None = None
-try:
-  from openpilot.tools.lib.logreader import LogReader
-except ModuleNotFoundError as e:
-  LogReader = None
-  IMPORT_ERROR = str(e)
+from openpilot.tools.lib.logreader import LogReader
 
 
 @dataclass
@@ -388,15 +383,6 @@ def print_human(result: AnalysisResult):
 
 
 def main():
-  if LogReader is None:
-    raise SystemExit(
-      "Failed to import LogReader dependencies.\n"
-      f"Import error: {IMPORT_ERROR}\n"
-      "Run from the openpilot environment with required Python deps (including capnp),\n"
-      "for example:\n"
-      "  PYTHONPATH=/workspace python3 tools/tuning/analyze_carrot_log.py <identifier>\n"
-    )
-
   parser = argparse.ArgumentParser(
     description="Carrot Pilot log based GV70 tuning helper",
     formatter_class=argparse.RawTextHelpFormatter,

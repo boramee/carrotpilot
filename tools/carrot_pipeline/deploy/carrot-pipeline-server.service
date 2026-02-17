@@ -1,0 +1,14 @@
+[Unit]
+Description=Carrot Pipeline Server (upload -> analyze -> telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/carrot-pipeline-server
+ExecStart=/usr/bin/env bash -lc 'cd "$OPENPILOT_DIR"; exec /usr/bin/python3 "$OPENPILOT_DIR/tools/carrot_pipeline/pipeline_server.py" --bind "$BIND_ADDR" --port "$PORT" --token "$UPLOAD_TOKEN" --storage-root "$STORAGE_ROOT" --min-speed "$MIN_SPEED" --telegram-bot-token "$TELEGRAM_BOT_TOKEN" --telegram-chat-id "$TELEGRAM_CHAT_ID" --max-upload-mb "$MAX_UPLOAD_MB"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

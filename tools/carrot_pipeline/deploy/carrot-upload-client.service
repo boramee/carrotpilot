@@ -1,0 +1,14 @@
+[Unit]
+Description=Carrot Upload Client (auto upload at drive end)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/carrot-upload-client
+ExecStart=/usr/bin/env bash -lc 'cd "$OPENPILOT_DIR"; exec /usr/bin/python3 "$OPENPILOT_DIR/tools/carrot_pipeline/upload_client.py" --server-url "$SERVER_URL" --token "$UPLOAD_TOKEN" $INCLUDE_RLOG_FLAG --poll-sec "$POLL_SEC" --settle-sec "$SETTLE_SEC" --log-root "$LOG_ROOT" --state-file "$STATE_FILE"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -10,9 +10,6 @@ from urllib.parse import quote
 
 import requests
 
-from openpilot.common.params import Params
-from openpilot.system.hardware.hw import Paths
-
 
 def route_prefix_from_segment(segment_name: str) -> str | None:
   if "--" not in segment_name:
@@ -214,7 +211,15 @@ def build_argparser() -> argparse.ArgumentParser:
 def main() -> None:
   args = build_argparser().parse_args()
 
-  log_root = Path(args.log_root) if args.log_root else Path(Paths.log_root())
+  if args.log_root:
+    log_root = Path(args.log_root)
+  else:
+    try:
+      from openpilot.system.hardware.hw import Paths
+      log_root = Path(Paths.log_root())
+    except Exception:
+      log_root = Path("/data/media/0/realdata")
+
   state_file = Path(args.state_file) if args.state_file else (log_root / "carrot_upload_state.json")
   client = CarrotUploadClient(args.server_url, args.token, args.include_rlog, state_file, log_root)
 
@@ -227,6 +232,15 @@ def main() -> None:
     if not uploaded:
       print("[upload] no pending routes")
     return
+
+  try:
+    from openpilot.common.params import Params
+  except Exception as e:
+    raise SystemExit(
+      "Failed to import openpilot Params for daemon mode.\n"
+      f"Import error: {e}\n"
+      "Use --once/--route for one-shot mode, or run on-device openpilot environment."
+    )
 
   params = Params()
   prev_onroad = params.get_bool("IsOnroad")

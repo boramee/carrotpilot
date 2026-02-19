@@ -192,6 +192,14 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalTuning.kpV = [1.]
     ret.longitudinalTuning.kf = 1.0
 
+    # Nexo can latch SCC/radar related warnings after comma restarts when OP longitudinal is active.
+    # Keep stock longitudinal on this platform to avoid persistent cruise/front sensor/FCEV faults.
+    if candidate in (CAR.HYUNDAI_NEXO, CAR.HYUNDAI_NEXO_1ST_GEN):
+      if ret.openpilotLongitudinalControl:
+        print("$$$NEXO: forcing stock longitudinal for restart stability")
+      ret.openpilotLongitudinalControl = False
+      ret.pcmCruise = True
+
     # *** feature detection ***
     if ret.flags & HyundaiFlags.CANFD:
       print(f"$$$$$ CanFD ECAN = {CAN.ECAN}")

@@ -290,21 +290,21 @@ class CarState(CarStateBase):
       gear = cp.vl["LVR12"]["CF_Lvr_Gear"]
       ret.gearStep = cp.vl["LVR11"]["CF_Lvr_GearInf"]
 
-    if not self.CP.carFingerprint in (CAR.HYUNDAI_NEXO):
-      ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
-    else:
-      gear = cp.vl["ELECT_GEAR"]["Elect_Gear_Shifter"]
-      gear_disp = cp.vl["ELECT_GEAR"]
+    ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
 
+    # Older Nexo DBCs can expose a raw 16-bit selector value; fall back to that mapping
+    # only when the standard parsing path cannot resolve the gear.
+    if ret.gearShifter == GearShifter.unknown and self.CP.carFingerprint in (CAR.HYUNDAI_NEXO, CAR.HYUNDAI_NEXO_1ST_GEN):
+      nexo_gear_raw = cp.vl["ELECT_GEAR"].get("Elect_Gear_Shifter_NEXO", cp.vl["ELECT_GEAR"]["Elect_Gear_Shifter"])
       gear_shifter = GearShifter.unknown
 
-      if gear == 1546:  # Thank you for Neokii  # fix PolorBear 22.06.05
+      if nexo_gear_raw == 1546:  # Thank you for Neokii  # fix PolorBear 22.06.05
         gear_shifter = GearShifter.drive
-      elif gear == 2314:
+      elif nexo_gear_raw == 2314:
         gear_shifter = GearShifter.neutral
-      elif gear == 2569:
+      elif nexo_gear_raw == 2569:
         gear_shifter = GearShifter.park
-      elif gear == 2566:
+      elif nexo_gear_raw == 2566:
         gear_shifter = GearShifter.reverse
 
       if gear_shifter != GearShifter.unknown and self.gear_shifter != gear_shifter:

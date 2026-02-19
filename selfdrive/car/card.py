@@ -307,6 +307,11 @@ class Car:
         #  print(f"elapsed time = {(self.t1 - start)*1000.:.2f}, {(self.t2 - self.t1)*1000.:.2f}, {(self.t3 - self.t1)*1000.:.2f}, {(time.monotonic() - self.t1)*1000.:.2f}")
         self.rk.monitor_time()
     finally:
+      # Re-enable any ECUs that were put into communication-control mode.
+      try:
+        self.CI.deinit(self.CP, *self.can_callbacks)
+      except Exception:
+        cloudlog.exception("CarInterface deinit failed")
       e.set()
       t.join()
     

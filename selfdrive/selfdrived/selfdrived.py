@@ -128,6 +128,7 @@ class SelfdriveD:
 
     self.atc_type_last = ""
 
+    self.lead_departure_alerted = False
 
     # some comma three with NVMe experience NVMe dropouts mid-drive that
     # cause loggerd to crash on write, so ignore it only on that platform
@@ -274,6 +275,16 @@ class SelfdriveD:
     elif self.sm['modelV2'].meta.laneChangeState in (LaneChangeState.laneChangeStarting,
                                                     LaneChangeState.laneChangeFinishing):
       self.events.add(EventName.laneChange)
+
+    # Lead vehicle departure detection (works without cruise engaged)
+    radarState = self.sm['radarState']
+    lead = radarState.leadOne
+    if CS.standstill and lead.status and lead.dRel < 50:
+      if lead.vRel > 1.0 and not self.lead_departure_alerted and not CS.cruiseState.enabled:
+        self.events.add(EventName.leadDeparture)
+        self.lead_departure_alerted = True
+    if not CS.standstill:
+      self.lead_departure_alerted = False
 
     for i, pandaState in enumerate(self.sm['pandaStates']):
       # All pandas must match the list of safetyConfigs, and if outside this list, must be silent or noOutput

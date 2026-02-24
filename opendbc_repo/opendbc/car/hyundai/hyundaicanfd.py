@@ -283,14 +283,10 @@ def create_acc_cancel(packer, CP, CAN, cruise_info_copy):
 
 def create_lfahda_cluster(packer, CS, CAN, long_active, lat_active):
 
-  if CS.lfahda_cluster is not None:
-    values = {} #
-    values["HDA_CntrlModSta"] = 2 if long_active else 0
-    values["HDA_LFA_SymSta"] = 2 if lat_active else 0
+  values = {}
+  values["HDA_CntrlModSta"] = 2 if long_active else 0
+  values["HDA_LFA_SymSta"] = 2 if lat_active else 0
 
-    # 
-  else:
-    return []
   return [packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values)]
 
 

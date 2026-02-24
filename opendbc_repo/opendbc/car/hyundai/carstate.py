@@ -603,20 +603,18 @@ class CarState(CarStateBase):
       ret.gearShifter = GearShifter.drive
     ret.gearStep = cp.vl["GEAR_ALT"]["GEAR_STEP"] if self.GEAR_ALT else ret.gearStep
 
-    if cp_alt and self.CP.flags & HyundaiFlags.CAMERA_SCC:
-      lane_info = self.cam_0x2a4 if self.cam_0x2a4 is not None else self.cam_0x362
-
-      if lane_info is not None:
-        left_lane_prob = lane_info["LEFT_LANE_PROB"]
-        right_lane_prob = lane_info["RIGHT_LANE_PROB"]
-        left_lane_type = lane_info["LEFT_LANE_TYPE"] # 0: dashed, 1: solid, 2: undecided, 3: road edge, 4: DLM Inner Solid, 5: DLM InnerDashed, 6:DLM Inner Undecided, 7: Botts Dots, 8: Barrier
-        right_lane_type = lane_info["RIGHT_LANE_TYPE"]
-        left_lane_color = lane_info["LEFT_LANE_COLOR"]
-        right_lane_color = lane_info["RIGHT_LANE_COLOR"]
-        left_lane_info = left_lane_color * 10 + left_lane_type
-        right_lane_info = right_lane_color * 10 + right_lane_type
-        ret.leftLaneLine = left_lane_info
-        ret.rightLaneLine = right_lane_info
+    lane_info = self.cam_0x2a4 if self.cam_0x2a4 is not None else self.cam_0x362
+    if lane_info is not None:
+      left_lane_prob = lane_info["LEFT_LANE_PROB"]
+      right_lane_prob = lane_info["RIGHT_LANE_PROB"]
+      left_lane_type = lane_info["LEFT_LANE_TYPE"] # 0: dashed, 1: solid, 2: undecided, 3: road edge, 4: DLM Inner Solid, 5: DLM InnerDashed, 6:DLM Inner Undecided, 7: Botts Dots, 8: Barrier
+      right_lane_type = lane_info["RIGHT_LANE_TYPE"]
+      left_lane_color = lane_info["LEFT_LANE_COLOR"]
+      right_lane_color = lane_info["RIGHT_LANE_COLOR"]
+      left_lane_info = left_lane_color * 10 + left_lane_type
+      right_lane_info = right_lane_color * 10 + right_lane_type
+      ret.leftLaneLine = left_lane_info
+      ret.rightLaneLine = right_lane_info
 
     # Manual Speed Limit Assist is a feature that replaces non-adaptive cruise control on EV CAN FD platforms.
     # It limits the vehicle speed, overridable by pressing the accelerator past a certain point.

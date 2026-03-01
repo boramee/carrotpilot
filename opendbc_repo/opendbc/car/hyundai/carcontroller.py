@@ -136,7 +136,6 @@ class CarController(CarControllerBase):
     self.button_spam1 = 8
     self.button_spam2 = 30
     self.button_spam3 = 1
-    self.cruise_off_frame = 0
 
     self.apply_angle_last = 0
     self.lkas_max_torque = 0
@@ -531,19 +530,14 @@ class CarController(CarControllerBase):
     target = int(set_speed_in_units+0.5)
     current = int(CS.out.cruiseState.speed * (CV.MS_TO_KPH if CS.is_metric else CV.MS_TO_MPH) + 0.5)
     v_ego_kph = CS.out.vEgo * CV.MS_TO_KPH
-    v_ego_int = int(v_ego_kph + 0.5)
 
     send_button = 0
     activate_cruise = False
 
-    if not CS.out.cruiseState.enabled:
-      self.cruise_off_frame = self.frame
-    just_activated = CS.out.cruiseState.enabled and (self.frame - self.cruise_off_frame) < 500
-
     if CC.enabled:
       if not CS.out.cruiseState.enabled:
         if (hud_control.leadVisible or v_ego_kph > 10.0) and self.activateCruise == 0:
-          send_button = Buttons.SET_DECEL
+          send_button = Buttons.RES_ACCEL
           self.activateCruise = 1
           activate_cruise = True
       elif CC.cruiseControl.resume:
@@ -552,12 +546,10 @@ class CarController(CarControllerBase):
         send_button = Buttons.SET_DECEL
       elif target > current and current < 160 and self.speed_from_pcm != 1:
         send_button = Buttons.RES_ACCEL
-      elif just_activated and current > 0 and v_ego_int > current + 5 and target >= current:
-        send_button = Buttons.RES_ACCEL
     elif CS.out.activateCruise: #CC.cruiseControl.activate:
       if (hud_control.leadVisible or v_ego_kph > 10.0) and self.activateCruise == 0:
         self.activateCruise = 1
-        send_button = Buttons.SET_DECEL
+        send_button = Buttons.RES_ACCEL
         activate_cruise = True
 
     if CS.out.brakePressed or CS.out.gasPressed:
@@ -570,27 +562,19 @@ class CarController(CarControllerBase):
 
     speed_diff = self.prev_clu_speed - current
     spamming_max = self.button_spam1
-    speed_gap = v_ego_int - current
-    fast_catchup = just_activated and speed_gap > 5 and not CS.out.brakePressed
-    if fast_catchup:
-      spamming_max = max(spamming_max, speed_gap)
-
     if CS.cruise_buttons[-1] != Buttons.NONE:
       self.last_button_frame = self.frame
-      self.button_wait = 3 if fast_catchup else self.button_spam2
+      self.button_wait = self.button_spam2
       self.button_spamming_count = 0
     elif abs(self.button_spamming_count) >= spamming_max or abs(speed_diff) > 0:
       self.last_button_frame = self.frame
-      if fast_catchup:
-        self.button_wait = 3
-      elif abs(self.button_spamming_count) >= spamming_max:
-        self.button_wait = self.button_spam2
-      else:
-        self.button_wait = 7
+      self.button_wait = self.button_spam2 if abs(self.button_spamming_count) >= spamming_max else 7
       self.button_spamming_count = 0
 
     self.prev_clu_speed = current
     send_button_allowed = (self.frame - self.last_button_frame) > self.button_wait
+    #CC.debugTextCC = "{} speed_diff={:.1f},{:.0f}/{:.0f}, button={}, button_wait={}, count={}".format(
+    #  send_button_allowed, speed_diff, target, current, send_button, self.button_wait, self.button_spamming_count)
 
     if send_button_allowed or activate_cruise or (CC.cruiseControl.resume and self.frame % 2 == 0):
       self.button_spamming_count = self.button_spamming_count + 1 if send_button == Buttons.RES_ACCEL else self.button_spamming_count - 1

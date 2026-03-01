@@ -130,7 +130,7 @@ def create_lfahda_mfc(packer, CC, blinking_signal):
   }
   return packer.make_can_msg("LFAHDA_MFC", 0, values)
 
-def create_acc_commands_scc(packer, enabled, accel, jerk, idx, hud_control, set_speed, stopping, long_override, use_fca, CS, soft_hold_mode):
+def create_acc_commands_scc(packer, enabled, accel, jerk, idx, hud_control, set_speed, stopping, long_override, use_fca, CS, soft_hold_mode, lead_departure_frame=0, frame=0):
   from opendbc.car.hyundai.carcontroller import HyundaiJerk
   cruise_available = CS.out.cruiseState.available
   if CS.paddle_button_prev > 0:
@@ -173,7 +173,8 @@ def create_acc_commands_scc(packer, enabled, accel, jerk, idx, hud_control, set_
     values["TauGapSet"] = hud_control.leadDistanceBars
     values["VSetDis"] = set_speed if enabled else 0
     values["AliveCounterACC"] = idx % 0x10
-    values["SCCInfoDisplay"] = 3 if warning_front else 4 if soft_hold_info else 0 if enabled else 0   #2: 크루즈 선택, 3: 전방상황주의, 4: 출발준비
+    lead_departing = lead_departure_frame > 0 and (frame - lead_departure_frame) < 300
+    values["SCCInfoDisplay"] = 5 if lead_departing else 3 if warning_front else 4 if soft_hold_info else 0 if enabled else 0
     values["ObjValid"] = 1 if hud_control.leadVisible else 0
     values["ACC_ObjStatus"] = 1 if hud_control.leadVisible else 0
     values["ACC_ObjLatPos"] = 0
@@ -241,7 +242,7 @@ def create_acc_opt_copy(CS, packer):
     values["NEW_SIGNAL_2"]  = 0
   return packer.make_can_msg("SCC13", 0, CS.scc13)
 
-def create_acc_commands(packer, enabled, accel, jerk, idx, hud_control, set_speed, stopping, long_override, use_fca, CP, CS, soft_hold_mode):
+def create_acc_commands(packer, enabled, accel, jerk, idx, hud_control, set_speed, stopping, long_override, use_fca, CP, CS, soft_hold_mode, lead_departure_frame=0, frame=0):
   from opendbc.car.hyundai.carcontroller import HyundaiJerk
   cruise_available = CS.out.cruiseState.available
   soft_hold_active = CS.softHoldActive
@@ -275,14 +276,15 @@ def create_acc_commands(packer, enabled, accel, jerk, idx, hud_control, set_spee
     "TauGapSet": hud_control.leadDistanceBars,
     "VSetDis": set_speed if enabled else 0,
     "AliveCounterACC": idx % 0x10,
-    "SCCInfoDisplay": 3 if warning_front else 4 if soft_hold_info else 0 if enabled else 0,   
-    "ObjValid": 1 if hud_control.leadVisible else 0, # close lead makes controls tighter
-    "ACC_ObjStatus": 1 if hud_control.leadVisible else 0, # close lead makes controls tighter
+    "ObjValid": 1 if hud_control.leadVisible else 0,
+    "ACC_ObjStatus": 1 if hud_control.leadVisible else 0,
     "ACC_ObjLatPos": 0,
     "ACC_ObjRelSpd": hud_control.leadRelSpeed,
-    "ACC_ObjDist": int(hud_control.leadDistance), # close lead makes controls tighter
+    "ACC_ObjDist": int(hud_control.leadDistance),
     "DriverAlertDisplay": 0,
     }
+  lead_departing = lead_departure_frame > 0 and (frame - lead_departure_frame) < 300
+  scc11_values["SCCInfoDisplay"] = 5 if lead_departing else 3 if warning_front else 4 if soft_hold_info else 0 if enabled else 0
   commands.append(packer.make_can_msg("SCC11", 0, scc11_values))
 
   scc12_values = {

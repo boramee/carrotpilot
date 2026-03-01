@@ -150,6 +150,9 @@ class CarController(CarControllerBase):
     self.is_ldws_car = Params().get_bool("IsLdwsCar")
     self.enable_corner_radar = 0
 
+    self.lead_departure_frame = 0
+    self.lead_departure_alerted = False
+
     self.steerDeltaUpOrg = self.steerDeltaUp = self.steerDeltaUpLC = self.params.STEER_DELTA_UP
     self.steerDeltaDownOrg = self.steerDeltaDown = self.steerDeltaDownLC = self.params.STEER_DELTA_DOWN
 
@@ -381,6 +384,15 @@ class CarController(CarControllerBase):
       if self.CP.carFingerprint in CAN_GEARS["send_mdps12"] and CS.mdps12 is not None:  # send mdps12 to LKAS to prevent LKAS error
         can_sends.append(hyundaican.create_mdps12(self.packer, self.frame, CS.mdps12))
 
+      # Lead vehicle departure detection
+      if CS.out.standstill and hud_control.leadVisible and hud_control.leadDistance < 50:
+        if hud_control.leadRelSpeed > 1.0 and not self.lead_departure_alerted:
+          self.lead_departure_frame = self.frame
+          self.lead_departure_alerted = True
+      if not CS.out.standstill:
+        self.lead_departure_alerted = False
+        self.lead_departure_frame = 0
+
       casper_opt = self.CP.carFingerprint in (CAR.HYUNDAI_CASPER_EV)
       if self.frame % 2 == 0 and self.CP.openpilotLongitudinalControl:
         self.hyundai_jerk.make_jerk(self.CP, CS, accel, actuators, hud_control)
@@ -388,14 +400,15 @@ class CarController(CarControllerBase):
         #jerk = 3.0 if actuators.longControlState == LongCtrlState.pid else 1.0
         use_fca = self.CP.flags & HyundaiFlags.USE_FCA.value
         if camera_scc:
-          
           can_sends.extend(hyundaican.create_acc_commands_scc(self.packer, CC.enabled, accel, self.hyundai_jerk, int(self.frame / 2),
                                                           hud_control, set_speed_in_units, stopping,
-                                                          CC.cruiseControl.override, casper_opt, CS, self.soft_hold_mode))
+                                                          CC.cruiseControl.override, casper_opt, CS, self.soft_hold_mode,
+                                                          self.lead_departure_frame, self.frame))
         else:
           can_sends.extend(hyundaican.create_acc_commands(self.packer, CC.enabled, accel, self.hyundai_jerk, int(self.frame / 2),
                                                 hud_control, set_speed_in_units, stopping,
-                                                CC.cruiseControl.override, use_fca, self.CP, CS, self.soft_hold_mode))
+                                                CC.cruiseControl.override, use_fca, self.CP, CS, self.soft_hold_mode,
+                                                self.lead_departure_frame, self.frame))
 
 
       # 20 Hz LFA MFA message

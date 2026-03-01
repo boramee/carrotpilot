@@ -1101,14 +1101,6 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.PERMANENT: torque_nn_load_alert,
   },
 
-  EventName.leadDeparture: {
-    ET.WARNING: Alert(
-      "전방 차량이 출발했습니다",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.trafficSignGreen, 3.),
-  },
-
 }
 
 

@@ -153,7 +153,6 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     audio0 @114;
 
     torqueNNLoad @118;
-    leadDeparture @119;
 
     soundsUnavailableDEPRECATED @47;
   }

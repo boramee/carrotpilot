@@ -537,7 +537,7 @@ class CarController(CarControllerBase):
     if CC.enabled:
       if not CS.out.cruiseState.enabled:
         if (hud_control.leadVisible or v_ego_kph > 10.0) and self.activateCruise == 0:
-          send_button = Buttons.RES_ACCEL
+          send_button = Buttons.SET_DECEL
           self.activateCruise = 1
           activate_cruise = True
       elif CC.cruiseControl.resume:
@@ -549,7 +549,7 @@ class CarController(CarControllerBase):
     elif CS.out.activateCruise: #CC.cruiseControl.activate:
       if (hud_control.leadVisible or v_ego_kph > 10.0) and self.activateCruise == 0:
         self.activateCruise = 1
-        send_button = Buttons.RES_ACCEL
+        send_button = Buttons.SET_DECEL
         activate_cruise = True
 
     if CS.out.brakePressed or CS.out.gasPressed:

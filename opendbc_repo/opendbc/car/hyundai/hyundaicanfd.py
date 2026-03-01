@@ -240,12 +240,14 @@ def create_suppress_lfa(packer, CAN, CS):
   values["RIGHT_LANE_LINE"] = 0
   return [packer.make_can_msg(suppress_msg, CAN.ACAN, values)]
 
-def create_buttons(packer, CP, CAN, cnt, btn):
+def create_buttons(packer, CP, CAN, cnt, btn, main_btn=0):
   values = {
     "COUNTER": cnt,
     "SET_ME_1": 1,
     "CRUISE_BUTTONS": btn,
   }
+  if main_btn:
+    values["ADAPTIVE_CRUISE_MAIN_BTN"] = 1
 
   #bus = CAN.ECAN if CP.flags & HyundaiFlags.CANFD_HDA2 else CAN.CAM
   bus = CAN.ECAN

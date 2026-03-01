@@ -136,6 +136,8 @@ class CarController(CarControllerBase):
     self.button_spam1 = 8
     self.button_spam2 = 30
     self.button_spam3 = 1
+    self.main_btn_trigger = 0
+    self.main_btn_cooldown = 0
 
     self.apply_angle_last = 0
     self.lkas_max_torque = 0
@@ -460,6 +462,17 @@ class CarController(CarControllerBase):
         if cruise_buttons_msg_values is not None:
           self.cruise_buttons_msg_values = cruise_buttons_msg_values
           self.cruise_buttons_msg_cnt = 0
+
+      if self.main_btn_cooldown > 0:
+        self.main_btn_cooldown -= 1
+      if self.main_btn_trigger > 0:
+        self.main_btn_trigger -= 1
+        if not (self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS):
+          can_sends.append(hyundaicanfd.create_buttons(self.packer, self.CP, self.CAN, CS.buttons_counter+1, Buttons.NONE, main_btn=1))
+        return can_sends
+      elif CS.main_enabled and not CS.MainMode_ACC and not CS.out.cruiseState.enabled and self.main_btn_cooldown <= 0:
+        self.main_btn_trigger = 6
+        self.main_btn_cooldown = 200
 
       if (self.frame - self.last_button_frame) * DT_CTRL > 0.25:
         # cruise cancel

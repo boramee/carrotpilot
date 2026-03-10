@@ -895,5 +895,40 @@ def create_ccnc_messages(CP, packer, CAN, frame, CC, CS, hud_control,
           values["LinkClass"] = 1
           values["SPEED_LIMIT"] = 100
           ret.append(packer.make_can_msg("HDA_INFO_4A3", CAN.CAM, values))
-
   return ret
+
+
+def create_5w_adrv_laneline_message(packer, CAN, frame, CC, CS, hud_control):
+  if frame % 5 != 0 or CS.adrv_0x161 is None:
+    return []
+
+  md = CS.MD
+  if not hasattr(create_5w_adrv_laneline_message, '_lane_line_check') or frame % 100 == 0:
+    create_5w_adrv_laneline_message._lane_line_check = Params().get_int("LaneLineCheck")
+  lane_line_check = create_5w_adrv_laneline_message._lane_line_check
+
+  lat_active = CC.latActive
+  values = copy.copy(CS.adrv_0x161)
+  rx_counter = values.pop("COUNTER", None)
+
+  curvature = round(CS.out.steeringAngleDeg / 3)
+  values["LANELINE_CURVATURE"] = (min(abs(curvature), 15) + (-1 if curvature < 0 else 0)) if lat_active else 0
+  values["LANELINE_CURVATURE_DIRECTION"] = 1 if curvature < 0 and lat_active else 0
+
+  lane_color = 6 if md is not None and md.meta.laneChangeAvailableLeft else 2
+  lane_line_warn_left = CS.out.leftLaneLine % 10 not in (0, 5) if lane_line_check >= 1 else CS.out.leftLaneLine >= 20
+  lane_color = 4 if lane_line_warn_left or CS.out.leftBlindspot else lane_color
+  if hud_control.leftLaneDepart:
+    values["LANELINE_LEFT"] = 4 if (frame // 50) % 2 == 0 else 1
+  else:
+    values["LANELINE_LEFT"] = lane_color if hud_control.leftLaneVisible else 0
+
+  lane_color = 6 if md is not None and md.meta.laneChangeAvailableRight else 2
+  lane_line_warn_right = CS.out.rightLaneLine % 10 not in (0, 5) if lane_line_check >= 1 else CS.out.rightLaneLine >= 20
+  lane_color = 4 if lane_line_warn_right or CS.out.rightBlindspot else lane_color
+  if hud_control.rightLaneDepart:
+    values["LANELINE_RIGHT"] = 4 if (frame // 50) % 2 == 0 else 1
+  else:
+    values["LANELINE_RIGHT"] = lane_color if hud_control.rightLaneVisible else 0
+
+  return [packer.make_can_msg("ADRV_0x161", CAN.ECAN, values, rx_counter=rx_counter)]

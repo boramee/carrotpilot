@@ -341,6 +341,10 @@ class CarController(CarControllerBase):
 
       if self.camera_scc_params in [2, 3]:
         self.canfd_toggle_adas(CC, CS)
+
+      if not camera_scc:
+        can_sends.extend(hyundaicanfd.create_5w_adrv_laneline_message(self.packer, self.CAN, self.frame, CC, CS, hud_control))
+
       if self.CP.openpilotLongitudinalControl:
         self.hyundai_jerk.make_jerk(self.CP, CS, accel, actuators, hud_control)
         self.hyundai_jerk.check_carrot_cruise(CC, CS, hud_control, stopping, accel, actuators.aTarget)

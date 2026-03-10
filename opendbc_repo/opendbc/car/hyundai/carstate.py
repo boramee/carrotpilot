@@ -150,10 +150,14 @@ class CarState(CarStateBase):
     cam_bus = CanBus(CP).CAM
     pt_bus = CanBus(CP).ECAN
     alt_bus = CanBus(CP).ACAN
-    self.GEAR = True if 69 in fingerprints[pt_bus] else False
-    self.GEAR_ALT = True if 64 in fingerprints[pt_bus] else False
-    self.TPMS = True if 0x3a0 in fingerprints[pt_bus] else False
-    self.LOCAL_TIME = True if 1264 in fingerprints[pt_bus] else False
+    pt_fingerprint = fingerprints.get(pt_bus, {})
+    alt_fingerprint = fingerprints.get(alt_bus, {})
+
+    self.GEAR = 69 in pt_fingerprint
+    self.GEAR_ALT = 64 in pt_fingerprint
+    self.tpms_bus = Bus.pt if 0x3a0 in pt_fingerprint else Bus.alt if 0x3a0 in alt_fingerprint else None
+    self.TPMS = self.tpms_bus is not None
+    self.LOCAL_TIME = 1264 in pt_fingerprint
 
     self.cp_bsm = None
     self.time_zone = "UTC"
@@ -251,6 +255,12 @@ class CarState(CarStateBase):
           add_and_cache(self.cp, "DOORS_SEATBELTS", "doors_seatbelts")
         elif self.controls_ready_count == 126:
           add_and_cache(self.cp, "CRUISE_BUTTONS_ALT2", "cruise_buttons_alt2", ignore_counter = True)
+          if self.TPMS:
+            tpms_cp = self.cp if self.tpms_bus == Bus.pt else self.cp_alt
+            tpms_fallback_cp = self.cp_alt if self.tpms_bus == Bus.pt else self.cp
+            tpms_added = tpms_cp is not None and add_and_cache(tpms_cp, "TPMS", "tpms")
+            if not tpms_added and tpms_fallback_cp is not None:
+              add_and_cache(tpms_fallback_cp, "TPMS", "tpms")
          
           
           
@@ -497,11 +507,16 @@ class CarState(CarStateBase):
     ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
 
     if self.TPMS:
-      tpms_unit = cp.vl["TPMS"]["UNIT"] * 0.725 if int(cp.vl["TPMS"]["UNIT"]) > 0 else 1.
-      ret.tpms.fl = tpms_unit * cp.vl["TPMS"]["PRESSURE_FL"]
-      ret.tpms.fr = tpms_unit * cp.vl["TPMS"]["PRESSURE_FR"]
-      ret.tpms.rl = tpms_unit * cp.vl["TPMS"]["PRESSURE_RL"]
-      ret.tpms.rr = tpms_unit * cp.vl["TPMS"]["PRESSURE_RR"]
+      tpms_cp = cp if self.tpms_bus == Bus.pt else cp_alt
+      if tpms_cp is None or "TPMS" not in tpms_cp.vl:
+        tpms_cp = cp_alt if self.tpms_bus == Bus.pt else cp
+
+      if tpms_cp is not None and "TPMS" in tpms_cp.vl:
+        tpms_unit = tpms_cp.vl["TPMS"]["UNIT"] * 0.725 if int(tpms_cp.vl["TPMS"]["UNIT"]) > 0 else 1.
+        ret.tpms.fl = tpms_unit * tpms_cp.vl["TPMS"]["PRESSURE_FL"]
+        ret.tpms.fr = tpms_unit * tpms_cp.vl["TPMS"]["PRESSURE_FR"]
+        ret.tpms.rl = tpms_unit * tpms_cp.vl["TPMS"]["PRESSURE_RL"]
+        ret.tpms.rr = tpms_unit * tpms_cp.vl["TPMS"]["PRESSURE_RR"]
 
     # TODO: figure out positions
     ret.wheelSpeeds = self.get_wheel_speeds(

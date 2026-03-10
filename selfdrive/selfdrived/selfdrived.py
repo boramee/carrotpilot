@@ -127,6 +127,9 @@ class SelfdriveD:
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
     self.atc_type_last = ""
+    self.lead_departure_alerted = False
+    self.lead_departure_prev_moving = False
+    self.lead_departure_track_id = -1
 
 
     # some comma three with NVMe experience NVMe dropouts mid-drive that
@@ -274,6 +277,32 @@ class SelfdriveD:
     elif self.sm['modelV2'].meta.laneChangeState in (LaneChangeState.laneChangeStarting,
                                                     LaneChangeState.laneChangeFinishing):
       self.events.add(EventName.laneChange)
+
+    # Lead vehicle departure alert for stock longitudinal cars
+    radar_state = self.sm['radarState']
+    lead = radar_state.leadOne
+    if CS.standstill:
+      lead_valid_close = lead.status and lead.dRel < 50.0
+      if lead_valid_close and lead.radarTrackId != self.lead_departure_track_id:
+        self.lead_departure_alerted = False
+        self.lead_departure_prev_moving = False
+        self.lead_departure_track_id = lead.radarTrackId
+      elif not lead_valid_close:
+        self.lead_departure_alerted = False
+        self.lead_departure_prev_moving = False
+        self.lead_departure_track_id = -1
+
+      lead_moving = lead_valid_close and lead.vRel > 1.0
+      should_alert = (not CS.cruiseState.enabled) and (not self.lead_departure_alerted) and (not self.lead_departure_prev_moving)
+      if lead_moving and should_alert:
+        self.events.add(EventName.trafficSignGreen)
+        self.lead_departure_alerted = True
+
+      self.lead_departure_prev_moving = lead_moving
+    else:
+      self.lead_departure_alerted = False
+      self.lead_departure_prev_moving = False
+      self.lead_departure_track_id = -1
 
     for i, pandaState in enumerate(self.sm['pandaStates']):
       # All pandas must match the list of safetyConfigs, and if outside this list, must be silent or noOutput

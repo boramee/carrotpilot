@@ -293,8 +293,8 @@ class SelfdriveD:
         self.lead_departure_prev_moving = False
         self.lead_departure_track_id = -1
 
-      lead_moving = lead_valid_close and lead.vRel > 1.0
-      should_alert = (not CS.cruiseState.enabled) and (not self.lead_departure_alerted) and (not self.lead_departure_prev_moving)
+      lead_moving = lead_valid_close and lead.vRel > 0.2
+      should_alert = (not self.lead_departure_alerted) and (not self.lead_departure_prev_moving)
       if lead_moving and should_alert:
         self.events.add(EventName.trafficSignGreen)
         self.lead_departure_alerted = True

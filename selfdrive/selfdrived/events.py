@@ -1036,6 +1036,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
   EventName.trafficSignGreen: {
     ET.WARNING: EngagementAlert(AudibleAlert.trafficSignGreen),
+    ET.PERMANENT: EngagementAlert(AudibleAlert.trafficSignGreen),
     #ET.WARNING: Alert(
     #  "출발합니다.",
     #  "",

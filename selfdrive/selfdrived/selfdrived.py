@@ -281,7 +281,8 @@ class SelfdriveD:
     # Lead vehicle departure alert for stock longitudinal cars
     radar_state = self.sm['radarState']
     lead = radar_state.leadOne
-    if CS.standstill:
+    ego_stopped = CS.standstill or CS.cruiseState.standstill or abs(CS.vEgo) < 0.1
+    if ego_stopped:
       lead_valid_close = lead.status and lead.dRel < 50.0
       if lead_valid_close and lead.radarTrackId != self.lead_departure_track_id:
         self.lead_departure_alerted = False

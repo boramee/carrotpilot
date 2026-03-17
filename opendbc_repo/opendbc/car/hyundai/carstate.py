@@ -100,6 +100,8 @@ class CarState(CarStateBase):
     self.hda_info_4a3 = None    
     self.tcs = None    
     self.mdps = None
+    self.tpms = None
+    self.local_time = None
     self.steer_touch_2af = None
     self.cruise_buttons_msg = None
     self.cam_0x362 = None
@@ -152,8 +154,12 @@ class CarState(CarStateBase):
     alt_bus = CanBus(CP).ACAN
     self.GEAR = True if 69 in fingerprints[pt_bus] else False
     self.GEAR_ALT = True if 64 in fingerprints[pt_bus] else False
-    self.TPMS = True if 0x3a0 in fingerprints[pt_bus] else False
-    self.LOCAL_TIME = True if 1264 in fingerprints[pt_bus] else False
+    if isinstance(fingerprints, dict):
+      canfd_buses = [bus for bus in (pt_bus, cam_bus, alt_bus) if bus in fingerprints]
+    else:
+      canfd_buses = [bus for bus in (pt_bus, cam_bus, alt_bus) if 0 <= bus < len(fingerprints)]
+    self.TPMS = any(0x3a0 in fingerprints[bus] for bus in canfd_buses)
+    self.LOCAL_TIME = any(1264 in fingerprints[bus] for bus in canfd_buses)
 
     self.cp_bsm = None
     self.time_zone = "UTC"
@@ -251,6 +257,13 @@ class CarState(CarStateBase):
           add_and_cache(self.cp, "DOORS_SEATBELTS", "doors_seatbelts")
         elif self.controls_ready_count == 126:
           add_and_cache(self.cp, "CRUISE_BUTTONS_ALT2", "cruise_buttons_alt2", ignore_counter = True)
+          for parser in (self.cp, self.cp_cam, self.cp_alt):
+            if parser is None:
+              continue
+            if self.tpms is None and add_and_cache(parser, "TPMS", "tpms", ignore_counter = True):
+              self.TPMS = True
+            if self.local_time is None and add_and_cache(parser, "LOCAL_TIME", "local_time", ignore_counter = True):
+              self.LOCAL_TIME = True
          
           
           
@@ -496,12 +509,13 @@ class CarState(CarStateBase):
     gear = cp.vl[self.gear_msg_canfd]["GEAR"] if not self.use_accelerator else 0 if self.accelerator is None else self.accelerator["GEAR"]
     ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
 
-    if self.TPMS:
-      tpms_unit = cp.vl["TPMS"]["UNIT"] * 0.725 if int(cp.vl["TPMS"]["UNIT"]) > 0 else 1.
-      ret.tpms.fl = tpms_unit * cp.vl["TPMS"]["PRESSURE_FL"]
-      ret.tpms.fr = tpms_unit * cp.vl["TPMS"]["PRESSURE_FR"]
-      ret.tpms.rl = tpms_unit * cp.vl["TPMS"]["PRESSURE_RL"]
-      ret.tpms.rr = tpms_unit * cp.vl["TPMS"]["PRESSURE_RR"]
+    tpms_msg = self.tpms if self.tpms is not None else cp.vl["TPMS"] if self.TPMS else None
+    if tpms_msg is not None:
+      tpms_unit = tpms_msg["UNIT"] * 0.725 if int(tpms_msg["UNIT"]) > 0 else 1.
+      ret.tpms.fl = tpms_unit * tpms_msg["PRESSURE_FL"]
+      ret.tpms.fr = tpms_unit * tpms_msg["PRESSURE_FR"]
+      ret.tpms.rl = tpms_unit * tpms_msg["PRESSURE_RL"]
+      ret.tpms.rr = tpms_unit * tpms_msg["PRESSURE_RR"]
 
     # TODO: figure out positions
     ret.wheelSpeeds = self.get_wheel_speeds(
@@ -648,8 +662,8 @@ class CarState(CarStateBase):
         #ret.cruiseState.nonAdaptive = cp.vl["MANUAL_SPEED_LIMIT_ASSIST"]["MSLA_ENABLED"] == 1
         ret.cruiseState.nonAdaptive = self.manual_speed_limit_assist["MSLA_ENABLED"] == 1
 
-    if self.LOCAL_TIME and self.time_zone != "UTC":
-      lt = cp.vl["LOCAL_TIME"]
+    lt = self.local_time if self.local_time is not None else cp.vl["LOCAL_TIME"] if self.LOCAL_TIME else None
+    if lt is not None and self.time_zone != "UTC":
       y, m, d, H, M, S = int(lt["YEAR"]) + 2000, int(lt["MONTH"]), int(lt["DATE"]), int(lt["HOURS"]), int(lt["MINUTES"]), int(lt["SECONDS"])
       try:
         dt_local = datetime(y, m, d, H, M, S, tzinfo=self.time_zone)

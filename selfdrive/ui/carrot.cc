@@ -1710,8 +1710,12 @@ public:
         const auto radar_state = sm["radarState"].getRadarState();
         auto lead_one = radar_state.getLeadOne();
         auto lp = sm["longitudinalPlan"].getLongitudinalPlan();
+        const auto car_control = sm["carControl"].getCarControl();
         //float desired_distance = lp.getDesiredDistance();
         float accel = lp.getAccels()[0];
+        float accel_out = car_control.getActuators().getAccel();
+        bool cruise_braking = longActive && std::min(accel, accel_out) < -0.3f;
+        brake_valid = brake_valid || cruise_braking;
 
         if (show_path_color >= 20) {
           if (longActive) {

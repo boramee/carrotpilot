@@ -1,7 +1,7 @@
 name: Scheduled Repo Sync
 on:
   schedule:
-    - cron: '30 15 * * *' # 매일 자정(UTC) 실행
+    - cron: '33 15 * * *' # 매일 자정(UTC) 실행
   workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
@@ -13,5 +13,5 @@ jobs:
         with:
           source_repo: "ajouatom/openpilot"
           source_branch: "c3-wip"
-          destination_branch: "c2-wip"
+          destination_branch: "c3-wip"
           github_token: ${{ secrets.GITHUB_TOKEN }}

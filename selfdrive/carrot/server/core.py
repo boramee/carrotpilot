@@ -27,7 +27,7 @@ import traceback
 import numpy as np
 from typing import Dict, Any, Tuple, Optional, List
 
-from aiohttp import web, ClientSession, WSMsgType
+from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
 from cereal import messaging
 from opendbc.car import structs
 import shlex
@@ -44,11 +44,15 @@ from openpilot.system.hardware import HARDWARE
 from ..realtime.raw_protocol import build_raw_hello, build_raw_multiplex_hello
 from ..realtime.transports import CameraWsHub, RawWsHub
 from .live_compat.broker import RealtimeBroker
+from .live_compat.normalize import to_transport_safe
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 
 DEFAULT_SETTINGS_PATH = "/data/openpilot/selfdrive/carrot_settings.json"
+CARROT_DATA_DIR = "/data/openpilot/selfdrive/carrot/data"
+CARROT_STATE_DIR = os.path.join(CARROT_DATA_DIR, "state")
+CARROT_GIT_STATE_PATH = os.path.join(CARROT_STATE_DIR, "git.json")
 
 WEB_DIR = os.path.join(ROOT_DIR, "web")
 CSS_DIR = os.path.join(WEB_DIR, "css")
@@ -200,14 +204,16 @@ async def proxy_stream(request: web.Request) -> web.StreamResponse:
   sess: ClientSession = request.app["http"]
 
   try:
-    async with sess.post(WEBRTCD_URL, data=body, headers={"Content-Type": ct}) as resp:
+    async with sess.post(WEBRTCD_URL, data=body, headers={"Content-Type": ct},
+                         timeout=ClientTimeout(total=15)) as resp:
       resp_body = await resp.read()
-      # 그대로 전달
       out = web.Response(body=resp_body, status=resp.status)
       rct = resp.headers.get("Content-Type")
       if rct:
         out.headers["Content-Type"] = rct
       return out
+  except asyncio.TimeoutError:
+    return web.json_response({"ok": False, "error": "webrtcd timeout"}, status=504)
   except Exception as e:
     return web.json_response({"ok": False, "error": str(e)}, status=502)
 
@@ -236,19 +242,21 @@ async def api_live_runtime(request: web.Request) -> web.Response:
 
   meta = broker.last_snapshot.get("meta") if isinstance(broker.last_snapshot, dict) else {}
   services = _select_live_runtime_services(broker.last_snapshot if isinstance(broker.last_snapshot, dict) else {})
-  return web.json_response({
+  return web.json_response(to_transport_safe({
     "ok": True,
     "meta": meta if isinstance(meta, dict) else {},
     "runtime": runtime if isinstance(runtime, dict) else {},
     "services": services,
     "snapshotAgeMs": broker.snapshot_age_ms(),
-  })
+  }))
 
 
 _LIVE_RUNTIME_SERVICE_NAMES = (
   "selfdriveState",
   "carState",
   "controlsState",
+  "deviceState",
+  "peripheralState",
   "longitudinalPlan",
   "lateralPlan",
   "radarState",
@@ -439,7 +447,61 @@ def _clamp_numeric(value: float, p: Optional[Dict[str, Any]]) -> float:
     pass
   return value
 
+def _read_git_state() -> Dict[str, Any]:
+  try:
+    with open(CARROT_GIT_STATE_PATH, "r", encoding="utf-8") as f:
+      data = json.load(f)
+    return data if isinstance(data, dict) else {}
+  except Exception:
+    return {}
+
+def _write_git_state(data: Dict[str, Any]) -> None:
+  try:
+    os.makedirs(CARROT_STATE_DIR, exist_ok=True)
+    tmp_path = f"{CARROT_GIT_STATE_PATH}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+      json.dump(data, f, ensure_ascii=True, separators=(",", ":"))
+    os.replace(tmp_path, CARROT_GIT_STATE_PATH)
+  except Exception:
+    pass
+
+def _read_custom_meta_value(name: str) -> Optional[str]:
+  if name != "GitPullTime":
+    return None
+
+  try:
+    value = _read_git_state().get("git_pull_time")
+    if value is None:
+      return None
+    return str(value).strip()
+  except Exception:
+    return None
+
+def _write_git_pull_time(ts: Optional[int] = None) -> None:
+  value = int(ts if ts is not None else time.time())
+  data = _read_git_state()
+  data["git_pull_time"] = value
+  data["git_pull_ok"] = True
+  _write_git_state(data)
+
+def _did_git_pull_update(output: str) -> bool:
+  body = str(output or "").strip().lower()
+  if not body:
+    return False
+  if "already up to date" in body or "already up-to-date" in body:
+    return False
+  return (
+    "fast-forward" in body or
+    "merge made by" in body or
+    "updating " in body or
+    bool(re.search(r"[0-9]+\s+files?\s+changed", body))
+  )
+
 def _get_param_value(name: str, default: Any) -> Any:
+  custom_value = _read_custom_meta_value(name)
+  if custom_value is not None:
+    return custom_value
+
   if not HAS_PARAMS:
     # mem store (string) fallback
     s = _mem_store.get(name, None)
@@ -586,8 +648,15 @@ async def api_params_bulk(request: web.Request) -> web.Response:
 
   values = {}
   for n in req_names:
-    default = by_name.get(n, {}).get("default", 0)
-    values[n] = _get_param_value(n, default)
+    if n == "DeviceType":
+      try:
+        from openpilot.system.hardware import HARDWARE
+        values[n] = HARDWARE.get_device_type()
+      except Exception:
+        values[n] = "unknown"
+    else:
+      default = by_name.get(n, {}).get("default", 0)
+      values[n] = _get_param_value(n, default)
 
   return web.json_response({"ok": True, "values": values})
 
@@ -864,7 +933,7 @@ def _filter_branch_list(branches: list[str]) -> list[str]:
     # local branch: c3-xxx / c4-xxx
     # remote branch: origin/c3-xxx, ajouatom/c3-xxx, etc.
     branch_name = name.split("/", 1)[-1] if "/" in name else name
-    if branch_name.startswith(prefix):
+    if branch_name.startswith(prefix) or "carrot":
       filtered.append(name)
 
   return sorted(set(filtered))
@@ -876,8 +945,18 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
 
   try:
     if action == "git_pull":
-      _tool_job_progress(job, message="git pull", current=1, total=1)
+      _tool_job_progress(job, message="git reset --hard", current=1, total=2)
+      _tool_job_append(job, "$ git reset --hard\n")
+      rc_reset = await _tool_stream_exec(job, ["git", "reset", "--hard"], cwd=repo_dir, timeout=120)
+      if rc_reset != 0:
+        _tool_job_finish(job, ok=False, result=_tool_result_from_log(job, rc_reset))
+        return
+
+      _tool_job_append(job, "\n$ git pull\n")
+      _tool_job_progress(job, message="git pull", current=2, total=2)
       rc = await _tool_stream_exec(job, ["git", "pull"], cwd=repo_dir, timeout=180)
+      if rc == 0 and _did_git_pull_update(job.get("log") or ""):
+        _write_git_pull_time()
       result = _tool_result_from_log(job, rc)
       _tool_job_finish(job, ok=rc == 0, result=result)
       return
@@ -936,8 +1015,18 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
         return
 
       _tool_job_progress(job, message=f"switch {branch}", current=2, total=2)
-      if branch.startswith("origin/"):
-        local_branch = branch.replace("origin/", "", 1)
+
+      # Detect if `branch` is a `<remote>/<name>` ref for any configured remote.
+      rc_remotes, remotes_out = await _tool_capture_exec(["git", "remote"], cwd=repo_dir, timeout=30)
+      known_remotes = remotes_out.split() if rc_remotes == 0 else ["origin"]
+      remote_prefix = None
+      for r in known_remotes:
+        if branch.startswith(f"{r}/"):
+          remote_prefix = r
+          break
+
+      if remote_prefix is not None:
+        local_branch = branch[len(remote_prefix) + 1:]
         script = (
           f"if git rev-parse --verify {shlex.quote(local_branch)} >/dev/null 2>&1; "
           f"then git switch {shlex.quote(local_branch)}; "
@@ -950,6 +1039,23 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
         )
       rc = await _tool_stream_exec(job, ["bash", "-lc", script], cwd=repo_dir, timeout=180)
       _tool_job_finish(job, ok=rc == 0, result=_tool_result_from_log(job, rc))
+      return
+
+    if action == "git_remote_set":
+      url = str(job.get("payload", {}).get("url") or "").strip()
+      if not url:
+        _tool_job_finish(job, ok=False, result={"ok": False, "error": "missing url"}, error="missing url")
+        return
+      
+      _tool_job_progress(job, message=f"set-url origin {url}", current=1, total=2)
+      rc_set = await _tool_stream_exec(job, ["git", "remote", "set-url", "origin", url], cwd=repo_dir, timeout=30)
+      if rc_set != 0:
+        _tool_job_finish(job, ok=False, result=_tool_result_from_log(job, rc_set))
+        return
+
+      _tool_job_progress(job, message="fetch origin", current=2, total=2)
+      rc_fetch = await _tool_stream_exec(job, ["git", "fetch", "--progress", "origin"], cwd=repo_dir, timeout=180)
+      _tool_job_finish(job, ok=rc_fetch == 0, result=_tool_result_from_log(job, rc_fetch))
       return
 
     if action == "git_branch_list":
@@ -1000,6 +1106,137 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
         "branch_prefix": _get_branch_prefix(),
       }
       _tool_job_finish(job, ok=True, result=result)
+      return
+    if action == "git_remote_add":
+      name = str(body.get("name") or "").strip()
+      url = str(body.get("url") or "").strip()
+      if not name or not url:
+        _tool_job_finish(job, ok=False, result={"ok": False, "error": "missing name or url"}, error="missing name or url")
+        return
+
+      _tool_job_progress(job, message=f"git remote add {name}", current=1, total=2)
+      rc_add = await _tool_stream_exec(job, ["git", "remote", "add", name, url], cwd=repo_dir, timeout=30)
+      if rc_add != 0:
+        _tool_job_finish(job, ok=False, result=_tool_result_from_log(job, rc_add))
+        return
+
+      _tool_job_progress(job, message=f"git fetch {name}", current=2, total=2)
+      rc_fetch = await _tool_stream_exec(job, ["git", "fetch", "--progress", name], cwd=repo_dir, timeout=180)
+      _tool_job_finish(job, ok=rc_fetch == 0, result=_tool_result_from_log(job, rc_fetch))
+      return
+
+    if action == "git_log":
+      count = min(int(body.get("count") or 20), 50)
+      _tool_job_progress(job, message="git log", current=1, total=1)
+      rc, out = await _tool_capture_exec(
+        ["git", "log", f"--oneline", f"-{count}"],
+        cwd=repo_dir,
+        timeout=30,
+      )
+      rc_head, out_head = await _tool_capture_exec(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=repo_dir,
+        timeout=10,
+      )
+      current_commit = out_head.strip() if rc_head == 0 else ""
+      if out:
+        _tool_job_append(job, out)
+      commits = []
+      for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+          continue
+        parts = line.split(" ", 1)
+        commits.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
+      result = {"ok": rc == 0, "commits": commits, "current_commit": current_commit, "out": out}
+      _tool_job_finish(job, ok=rc == 0, result=result)
+      return
+
+    if action == "git_reset_repo_fetch":
+      url = "https://github.com/ajouatom/openpilot.git"
+      # Phase 1: ensure origin points to the correct URL
+      _tool_job_progress(job, message="configuring origin remote", current=1, total=4)
+
+      # Try set-url first (works if origin exists)
+      rc_set, _ = await _tool_capture_exec(
+        ["git", "remote", "set-url", "origin", url], cwd=repo_dir, timeout=15
+      )
+      if rc_set != 0:
+        # origin doesn't exist; remove any stale one then add fresh
+        _tool_job_append(job, "origin not found, adding new remote\n")
+        await _tool_capture_exec(["git", "remote", "remove", "origin"], cwd=repo_dir, timeout=10)
+        rc_add, out_add = await _tool_capture_exec(
+          ["git", "remote", "add", "origin", url], cwd=repo_dir, timeout=15
+        )
+        if rc_add != 0:
+          _tool_job_append(job, f"failed to add origin: {out_add}\n")
+          _tool_job_finish(job, ok=False, result={"ok": False, "error": f"failed to configure remote: {out_add}"})
+          return
+      _tool_job_append(job, f"origin → {url}\n")
+
+      # Phase 2: remove ALL other remotes (so only origin remains)
+      _tool_job_progress(job, message="cleaning other remotes", current=2, total=4)
+      rc_remotes, out_remotes = await _tool_capture_exec(
+        ["git", "remote"], cwd=repo_dir, timeout=10
+      )
+      for remote_name in (out_remotes or "").splitlines():
+        remote_name = remote_name.strip()
+        if remote_name and remote_name != "origin":
+          _tool_job_append(job, f"removing remote: {remote_name}\n")
+          await _tool_capture_exec(
+            ["git", "remote", "remove", remote_name], cwd=repo_dir, timeout=10
+          )
+
+      # Phase 3: fetch from origin only
+      _tool_job_progress(job, message="git fetch origin --prune", current=3, total=4)
+      rc_fetch = await _tool_stream_exec(
+        job, ["git", "fetch", "origin", "--prune"], cwd=repo_dir, timeout=300
+      )
+      if rc_fetch != 0:
+        _tool_job_finish(job, ok=False, result=_tool_result_from_log(job, rc_fetch))
+        return
+
+      # Phase 4: list remote branches (origin/* only)
+      _tool_job_progress(job, message="listing branches", current=4, total=4)
+      rc_br, out_br = await _tool_capture_exec(
+        ["git", "branch", "-r"], cwd=repo_dir, timeout=15
+      )
+      branches = []
+      for line in (out_br or "").splitlines():
+        line = line.strip()
+        if not line or "->" in line:
+          continue
+        # Only include origin/* branches
+        if not line.startswith("origin/"):
+          continue
+        # "origin/c3-wip" → "c3-wip"
+        branches.append(line.split("/", 1)[1])
+      branches = sorted(set(branches))
+      _tool_job_append(job, f"found {len(branches)} branches\n")
+
+      result = {"ok": True, "branches": branches, "out": (job.get("log") or "").strip()}
+      _tool_job_finish(job, ok=True, result=result)
+      return
+
+    if action == "git_reset_repo_checkout":
+      branch = str(body.get("branch") or "").strip()
+      if not branch:
+        _tool_job_finish(job, ok=False, result={"ok": False, "error": "missing branch"}, error="missing branch")
+        return
+
+      steps = [
+        (f"git checkout -B {branch} origin/{branch}", ["git", "checkout", "-B", branch, f"origin/{branch}"]),
+        (f"git reset --hard origin/{branch}", ["git", "reset", "--hard", f"origin/{branch}"]),
+        ("git clean -xfd", ["git", "clean", "-xfd"]),
+      ]
+      for i, (msg, cmd) in enumerate(steps):
+        _tool_job_progress(job, message=msg, current=i+1, total=len(steps))
+        rc = await _tool_stream_exec(job, cmd, cwd=repo_dir, timeout=120)
+        if rc != 0:
+          _tool_job_finish(job, ok=False, result=_tool_result_from_log(job, rc))
+          return
+
+      _tool_job_finish(job, ok=True, result=_tool_result_from_log(job, 0))
       return
 
     if action == "delete_all_videos":
@@ -1136,6 +1373,22 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
       _tool_job_finish(job, ok=True, result=result)
       return
 
+    if action == "reset_calib":
+      _tool_job_progress(job, message="reset calibration", current=1, total=1)
+      import glob as _glob
+      for f in ["/data/params/d_tmp/CalibrationParams", "/data/params/d/CalibrationParams"]:
+        try:
+          os.remove(f)
+          _tool_job_append(job, f"removed {f}")
+        except FileNotFoundError:
+          pass
+        except Exception as e:
+          _tool_job_append(job, f"error removing {f}: {e}")
+      _tool_job_finish(job, ok=True, result={"ok": True, "out": "calibration reset"})
+      await asyncio.sleep(1)
+      subprocess.Popen(["sudo", "reboot"])
+      return
+
     if action == "reboot":
       _tool_job_progress(job, message="request reboot", current=1, total=1)
       subprocess.Popen(["sudo", "reboot"])
@@ -1172,7 +1425,7 @@ async def _run_tool_job(job: Dict[str, Any]) -> None:
       if argv[0] in alias_map:
         argv = alias_map[argv[0]] + argv[1:]
 
-      allowed_top = {"git", "df", "free", "uptime", "scons"}
+      allowed_top = {"git", "df", "free", "uptime", "scons", "rm", "echo", "sleep", "sudo", "reboot", "cat", "ls"}
       if argv[0] not in allowed_top:
         _tool_job_finish(
           job,
@@ -1295,6 +1548,8 @@ async def api_tools(request: web.Request) -> web.Response:
 
     if action == "git_pull":
       rc, out = run(["git", "pull"], cwd=REPO_DIR)
+      if rc == 0 and _did_git_pull_update(out):
+        _write_git_pull_time()
       return web.json_response({"ok": rc == 0, "rc": rc, "out": out})
 
     if action == "git_sync":
@@ -1349,7 +1604,6 @@ async def api_tools(request: web.Request) -> web.Response:
       except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
   
-
     if action == "git_branch_list":
       rc0, out0 = run(["git", "fetch", "--all", "--prune"], cwd=REPO_DIR)
       if rc0 != 0:
@@ -1388,6 +1642,91 @@ async def api_tools(request: web.Request) -> web.Response:
         "branch_prefix": _get_branch_prefix(),
       })
     
+
+    if action == "git_remote_add":
+      name = (body.get("name") or "").strip()
+      url = (body.get("url") or "").strip()
+      if not name or not url:
+        return web.json_response({"ok": False, "error": "missing name or url"}, status=400)
+      rc_add, out_add = run(["git", "remote", "add", name, url], cwd=REPO_DIR)
+      if rc_add != 0:
+        return web.json_response({"ok": False, "rc": rc_add, "out": out_add})
+      rc_fetch, out_fetch = run(["git", "fetch", name], cwd=REPO_DIR)
+      out = (out_add + "\n" + out_fetch).strip()
+      return web.json_response({"ok": rc_fetch == 0, "rc": rc_fetch, "out": out})
+
+    if action == "git_log":
+      count = min(int(body.get("count") or 20), 50)
+      rc, out = run(["git", "log", "--oneline", f"-{count}"], cwd=REPO_DIR)
+      rc_head, out_head = run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_DIR)
+      current_commit = out_head.strip() if rc_head == 0 else ""
+      commits = []
+      for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+          continue
+        parts = line.split(" ", 1)
+        commits.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
+      return web.json_response({"ok": rc == 0, "commits": commits, "current_commit": current_commit, "out": out})
+
+    if action == "git_reset_repo_fetch":
+      url = "https://github.com/ajouatom/openpilot.git"
+      out_all = ""
+
+      # Configure origin
+      rc_set, out_set = run(["git", "remote", "set-url", "origin", url], cwd=REPO_DIR)
+      if rc_set != 0:
+        run(["git", "remote", "remove", "origin"], cwd=REPO_DIR)
+        rc_add, out_add = run(["git", "remote", "add", "origin", url], cwd=REPO_DIR)
+        out_all += f"> git remote add origin {url}\n{out_add}\n\n"
+        if rc_add != 0:
+          return web.json_response({"ok": False, "error": f"failed to configure remote: {out_add}"})
+      else:
+        out_all += f"> git remote set-url origin {url}\n{out_set}\n\n"
+
+      # Remove ALL other remotes
+      rc_rem, out_rem = run(["git", "remote"], cwd=REPO_DIR)
+      for rname in (out_rem or "").splitlines():
+        rname = rname.strip()
+        if rname and rname != "origin":
+          run(["git", "remote", "remove", rname], cwd=REPO_DIR)
+          out_all += f"> removed remote: {rname}\n"
+
+      # Fetch origin only
+      rc_fetch, out_fetch = run(["git", "fetch", "origin", "--prune"], cwd=REPO_DIR)
+      out_all += f"> git fetch origin --prune\n{out_fetch}\n\n"
+      if rc_fetch != 0:
+        return web.json_response({"ok": False, "rc": rc_fetch, "out": out_all.strip()})
+
+      # List origin/* branches only
+      rc_br, out_br = run(["git", "branch", "-r"], cwd=REPO_DIR)
+      branches = []
+      for line in (out_br or "").splitlines():
+        line = line.strip()
+        if not line or "->" in line:
+          continue
+        if not line.startswith("origin/"):
+          continue
+        branches.append(line.split("/", 1)[1])
+      branches = sorted(set(branches))
+      return web.json_response({"ok": True, "branches": branches, "out": out_all.strip()})
+
+    if action == "git_reset_repo_checkout":
+      branch = str(body.get("branch") or "").strip()
+      if not branch:
+        return web.json_response({"ok": False, "error": "missing branch"}, status=400)
+      commands = [
+        ["git", "checkout", "-B", branch, f"origin/{branch}"],
+        ["git", "reset", "--hard", f"origin/{branch}"],
+        ["git", "clean", "-xfd"],
+      ]
+      out_all = ""
+      for c in commands:
+        rc, out = run(c, cwd=REPO_DIR)
+        out_all += f"> {' '.join(c)}\n{out}\n\n"
+        if rc != 0:
+          return web.json_response({"ok": False, "rc": rc, "out": out_all.strip()})
+      return web.json_response({"ok": True, "out": out_all.strip()})
 
     if action == "delete_all_videos":
       # 경로는 환경 맞춰 조정
@@ -1554,6 +1893,21 @@ async def api_tools(request: web.Request) -> web.Response:
       except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
+    if action == "reset_calib":
+      import glob as _glob
+      out_msg = []
+      for f in ["/data/params/d_tmp/CalibrationParams", "/data/params/d/CalibrationParams"]:
+        try:
+          os.remove(f)
+          out_msg.append(f"removed {f}")
+        except FileNotFoundError:
+          pass
+        except Exception as e:
+          out_msg.append(f"error removing {f}: {e}")
+      # start reboot async
+      subprocess.Popen("sleep 1 && sudo reboot", shell=True)
+      return web.json_response({"ok": True, "out": "\n".join(out_msg) or "calibration reset"})
+
     if action == "reboot":
       subprocess.Popen(["sudo", "reboot"])
       return web.json_response({"ok": True, "out": "reboot requested"})
@@ -1590,7 +1944,7 @@ async def api_tools(request: web.Request) -> web.Response:
       if argv[0] in alias_map:
         argv = alias_map[argv[0]] + argv[1:]
 
-      allowed_top = {"git", "df", "free", "uptime", "scons"}
+      allowed_top = {"git", "df", "free", "uptime", "scons", "rm", "echo", "sleep", "sudo", "reboot", "cat", "ls"}
       if argv[0] not in allowed_top:
         return web.json_response({"ok": False, "error": f"not allowed: {argv[0]}"}, status=403)
 

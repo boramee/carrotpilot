@@ -36,6 +36,7 @@ const UI_STRINGS = {
     home: "홈",
     setting: "설정",
     tools: "도구",
+    logs: "로그",
     terminal: "터미널",
     fleet: "Fleet",
     carrot: "당근",
@@ -125,6 +126,7 @@ const UI_STRINGS = {
     home: "Home",
     setting: "Setting",
     tools: "Tools",
+    logs: "Logs",
     terminal: "Terminal",
     fleet: "Fleet",
     carrot: "Carrot",
@@ -213,6 +215,7 @@ const UI_STRINGS = {
     home: "首页",
     setting: "设置",
     tools: "工具",
+    logs: "日志",
     terminal: "终端",
     fleet: "车队",
     carrot: "胡萝卜",
@@ -316,7 +319,7 @@ const ACTION_LABELS = {
     rebuild_all:      { running: "전체 재빌드 중...",         done: "재빌드+재부팅 시작", failed: "재빌드 실패" },
     shell_cmd:        { running: "명령 실행 중...",           done: "실행 완료",          failed: "실행 실패" },
     install_required: { running: "패키지 설치 중...",         done: "설치 완료",          failed: "설치 실패" },
-    git_remote_add:   { running: "리모트 추가 중...",         done: "리모트 추가 완료",    failed: "리모트 추가 실패" },
+    git_remote_add:   { running: "리모트 추가/갱신 중...",    done: "리모트 추가/갱신 완료", failed: "리모트 추가/갱신 실패" },
     git_log:          { running: "커밋 목록 조회 중...",      done: "조회 완료",          failed: "조회 실패" },
     git_reset_repo_fetch: { running: "리포지토리 정보 가져오는 중...", done: "가져오기 완료", failed: "가져오기 실패" },
     git_reset_repo_checkout: { running: "리포지토리 초기화 중...", done: "초기화 완료", failed: "초기화 실패" },
@@ -337,7 +340,7 @@ const ACTION_LABELS = {
     rebuild_all:      { running: "Rebuilding all...",        done: "Rebuild+reboot started", failed: "Rebuild failed" },
     shell_cmd:        { running: "Running command...",       done: "Complete",            failed: "Command failed" },
     install_required: { running: "Installing packages...",   done: "Installed",           failed: "Install failed" },
-    git_remote_add:   { running: "Adding remote...",         done: "Remote added",        failed: "Add remote failed" },
+    git_remote_add:   { running: "Adding/updating remote...", done: "Remote added/updated", failed: "Add/update remote failed" },
     git_log:          { running: "Loading commits...",       done: "Loaded",              failed: "Load failed" },
     git_reset_repo_fetch: { running: "Fetching repo info...", done: "Fetch complete", failed: "Fetch failed" },
     git_reset_repo_checkout: { running: "Resetting repo...", done: "Reset complete", failed: "Reset failed" },
@@ -358,7 +361,7 @@ const ACTION_LABELS = {
     rebuild_all:      { running: "全部重建中...",             done: "重建+重启已开始",     failed: "重建失败" },
     shell_cmd:        { running: "运行命令中...",             done: "运行完成",            failed: "命令失败" },
     install_required: { running: "安装包中...",               done: "安装完成",            failed: "安装失败" },
-    git_remote_add:   { running: "添加远程中...",             done: "远程已添加",          failed: "添加失败" },
+    git_remote_add:   { running: "添加/更新远程中...",         done: "远程已添加/更新",      failed: "添加/更新失败" },
     git_log:          { running: "加载提交中...",             done: "加载完成",            failed: "加载失败" },
     git_reset_repo_fetch: { running: "获取仓库信息中...", done: "获取完成", failed: "获取失败" },
     git_reset_repo_checkout: { running: "重置仓库中...", done: "重置完成", failed: "重置失败" },
@@ -436,6 +439,7 @@ let CURRENT_MAKER = null;
 
 const btnHome = document.getElementById("btnHome");
 const btnSetting = document.getElementById("btnSetting");
+const btnLogs = document.getElementById("btnLogs");
 const btnTerminal = document.getElementById("btnTerminal");
 const btnFleet = document.getElementById("btnFleet");
 const btnLang = document.getElementById("btnLang");
@@ -482,6 +486,7 @@ const PAGE_ELEMENTS = {
   setting: document.getElementById("pageSetting"),
   car: document.getElementById("pageCar"),
   tools: document.getElementById("pageTools"),
+  logs: document.getElementById("pageLogs"),
   terminal: document.getElementById("pageTerminal"),
   branch: document.getElementById("pageBranch"),
   carrot: document.getElementById("pageCarrot"),
@@ -569,6 +574,7 @@ const modelMeta = document.getElementById("modelMeta");
 btnHome.onclick = () => showPage("carrot", true, getSwipeTransition(CURRENT_PAGE, "carrot"));
 btnRecordToggle.onclick = () => toggleRecord();
 btnSetting.onclick = () => showPage("setting", true, getSwipeTransition(CURRENT_PAGE, "setting"));
+if (btnLogs) btnLogs.onclick = () => showPage("logs", true, getSwipeTransition(CURRENT_PAGE, "logs"));
 btnTerminal.onclick = () => showPage("terminal", true, getSwipeTransition(CURRENT_PAGE, "terminal"));
 
 async function openFleetLink() {
@@ -616,7 +622,8 @@ const branchList = document.getElementById("branchList");
 const quickLink = document.getElementById("toolsQuickLink");
 const chipQuickLabel = document.getElementById("toolsQuickLinkTitle");
 const btnSaveQuickLink = document.getElementById("btnToolsQuickLink");
-let QUICK_LINK_URL = "";
+const QUICK_LINK_FIXED_URL = "https://man.carrotpilot.app/";
+let QUICK_LINK_URL = QUICK_LINK_FIXED_URL;
 let QUICK_LINK_STATUS = "loading";
 let QUICK_LINK_MESSAGE = "";
 let quickLinkLoadPromise = null;
@@ -856,6 +863,7 @@ function showPage(page, pushHistory = false, transition = null) {
   btnHome.classList.toggle("active", page === "carrot");
   btnSetting.classList.toggle("active", page === "setting");
   btnTools.classList.toggle("active", page === "tools");
+  if (btnLogs) btnLogs.classList.toggle("active", page === "logs");
   btnTerminal.classList.toggle("active", page === "terminal");
 
   if (typeof updateAppViewportMetrics === "function") {
@@ -906,6 +914,9 @@ function showPage(page, pushHistory = false, transition = null) {
     initToolsPage();
     updateQuickLink().catch(() => {});
   }
+  if (page === "logs" && typeof initLogsPage === "function") {
+    initLogsPage();
+  }
   if (page === "terminal" && typeof initTerminalPage === "function") {
     initTerminalPage();
   }
@@ -917,6 +928,7 @@ function showPage(page, pushHistory = false, transition = null) {
     (page === "setting") ? { page: "setting", screen: "groups", group: null } :
     (page === "car") ? { page: "car", screen: "makers", maker: null } :
     (page === "tools") ? { page: "tools" } :
+    (page === "logs") ? { page: "logs" } :
     (page === "terminal") ? { page: "terminal" } :
     (page === "carrot") ? { page: "carrot" } :
     (page === "branch") ? { page: "branch" } :
@@ -1052,6 +1064,7 @@ function renderUIText() {
   setNavText("btnHome", s.home);
   setNavText("btnSetting", s.setting);
   setNavText("btnTools", s.tools);
+  setNavText("btnLogs", s.logs);
   setNavText("btnTerminal", s.terminal);
   setNavText("btnFleet", s.fleet);
   setText("btnQuickLinkWeb", "Web");
@@ -1489,65 +1502,25 @@ function renderQuickLinkUI() {
 function setServerStateStatus() {}
 
 async function updateQuickLink(options = {}) {
-  const force = options.force === true;
   const silent = options.silent === true;
-  const ttlMs = Number.isFinite(options.ttlMs) ? options.ttlMs : 15000;
-
-  if (!force && quickLinkLoadPromise) return quickLinkLoadPromise;
-  if (!force && quickLinkLoadedAt > 0 && (Date.now() - quickLinkLoadedAt) < ttlMs) {
-    if (!silent || CURRENT_PAGE === "tools") renderQuickLinkUI();
-    return QUICK_LINK_URL;
-  }
-
-  if (!silent) {
-    QUICK_LINK_URL = "";
-    QUICK_LINK_STATUS = "loading";
-    QUICK_LINK_MESSAGE = "";
-    renderQuickLinkUI();
-  }
-
-  quickLinkLoadPromise = (async () => {
-    try {
-      const values = await bulkGet(["GithubUsername"]);
-      const githubId = String(values["GithubUsername"] || "").trim();
-
-      if (!githubId) {
-        QUICK_LINK_URL = "";
-        QUICK_LINK_STATUS = "empty";
-        QUICK_LINK_MESSAGE = "";
-        quickLinkLoadedAt = Date.now();
-        if (!silent || CURRENT_PAGE === "tools") renderQuickLinkUI();
-        return "";
-      }
-
-      QUICK_LINK_URL = `https://shind0.synology.me/carrot/go/?id=${encodeURIComponent(githubId)}`;
-      QUICK_LINK_STATUS = "ready";
-      QUICK_LINK_MESSAGE = "";
-      quickLinkLoadedAt = Date.now();
-      if (!silent || CURRENT_PAGE === "tools") renderQuickLinkUI();
-      return QUICK_LINK_URL;
-    } catch (e) {
-      QUICK_LINK_STATUS = "error";
-      QUICK_LINK_MESSAGE = `QuickLink error: ${e?.message || e}`;
-      if (!silent || CURRENT_PAGE === "tools") renderQuickLinkUI();
-      console.log("[QuickLink] failed:", e);
-      throw e;
-    } finally {
-      quickLinkLoadPromise = null;
-    }
-  })();
-
-  return quickLinkLoadPromise;
+  QUICK_LINK_URL = QUICK_LINK_FIXED_URL;
+  QUICK_LINK_STATUS = "ready";
+  QUICK_LINK_MESSAGE = "";
+  quickLinkLoadPromise = null;
+  quickLinkLoadedAt = Date.now();
+  if (!silent || CURRENT_PAGE === "tools") renderQuickLinkUI();
+  return QUICK_LINK_URL;
 }
 
 async function openQuickLink() {
-  if (!QUICK_LINK_URL) return;
+  QUICK_LINK_URL = QUICK_LINK_FIXED_URL;
+  renderQuickLinkUI();
   const msg = LANG === "ko"
-    ? `Web을 여시겠습니까?\n\n${QUICK_LINK_URL}`
-    : `${getUIText("open", "Open")} Web?\n\n${QUICK_LINK_URL}`;
+    ? `Web을 여시겠습니까?\n\n${QUICK_LINK_FIXED_URL}`
+    : `${getUIText("open", "Open")} Web?\n\n${QUICK_LINK_FIXED_URL}`;
   const ok = await appConfirm(msg, { title: "Web" });
   if (!ok) return;
-  window.open(QUICK_LINK_URL, "_blank", "noopener");
+  window.open(QUICK_LINK_FIXED_URL, "_blank", "noopener");
 }
 
 if (btnQuickLinkWeb) {
@@ -1614,7 +1587,7 @@ async function setParam(name, value) {
 }
 
 /* ── Swipe Navigation ──────────────────────────────────── */
-const SWIPE_PAGES = ["carrot", "setting", "tools", "terminal"];
+const SWIPE_PAGES = ["carrot", "setting", "tools", "logs", "terminal"];
 const SETTING_BACK_EDGE_WIDTH = 32;
 
 function isLandscapeRailMode() {

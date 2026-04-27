@@ -22,7 +22,8 @@ import urllib.request
 import urllib.error
 import ssl
 import requests
-
+import psutil
+import ipaddress
 import cereal.messaging as messaging
 from openpilot.common.realtime import Ratekeeper, set_core_affinity
 from openpilot.common.params import Params
@@ -649,7 +650,7 @@ class CarrotMan:
     else:
       car_selected = car_selected
 
-    git_branch = Params().get("GitBranch")
+    git_branch = Params().get("GitBranch").replace("/", "__")
     try:
       ftp.mkd(git_branch)
     except Exception as e:
@@ -684,6 +685,19 @@ class CarrotMan:
     ftp.quit()
 
   def send_tmux_http(self, tmux_why, send_settings=False):
+    def get_private_ip_by_iface(name="wlan0"):
+      addrs = psutil.net_if_addrs().get(name, [])
+
+      for addr in addrs:
+          if addr.family == socket.AF_INET:
+              try:
+                  ip_obj = ipaddress.ip_address(addr.address)
+                  if ip_obj.is_private:
+                      return addr.address
+              except ValueError:
+                  continue
+      return None
+
     def _pstr(key):
       v = Params().get(key) or ""
       return v.decode("utf-8", errors="ignore") if isinstance(v, bytes) else v
@@ -698,6 +712,8 @@ class CarrotMan:
       "git_commit"        : f"{_pstr("GitCommit")}",
       "git_commit_date"   : f"{_pstr("GitCommitDate")}",
       "dongle_id"         : f"{_pstr("DongleId")}",
+      "device_serial"     : f"{_pstr("HardwareSerial")}",
+      "local_ip"          : f"{get_private_ip_by_iface("wlan0")}",
     }
 
     files = [
@@ -1044,6 +1060,8 @@ class CarrotMan:
 
     # {'distance': 120, 'greenLightRemainTime': 0, 'leftLightRemainTime': 0, 'location': {'coordString': 'x:127.045286, y:37.477032', 'latitude': 37.47703188722564, 'longitude': 127.04528634430659},
     #       'redLightRemainTime': 15, 'rightLightRemainTime': 0, 'uturnLightRemainTime': 0, 'greenLightOn': False, 'leftLightOn': False, 'redLightOn': True, 'rightLightOn': False, 'uturnLightOn': False}
+    lamp = None
+    remain = 0
 
     if d.get("redLightOn"):
       lamp = "red"

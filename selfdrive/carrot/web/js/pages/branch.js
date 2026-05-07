@@ -343,6 +343,9 @@ async function onSelectBranch(item) {
 
   try {
     await runTool("git_checkout", item?.checkoutPayload || { branch });
+    if (typeof refreshGitPullStatus === "function") {
+      await refreshGitPullStatus({ force: true });
+    }
     toolsLogNotice(UI_STRINGS[LANG].branch_changed || "Branch changed.", { label: "git_checkout" });
   } catch (e) {
     showError("git_checkout", e);
@@ -370,21 +373,39 @@ const dashcamState = {
   expanded: new Set(),
   selected: new Set(),
   refreshTimer: null,
+  loadingMore: false,
   scrollBusy: false,
   scrollTimer: null,
+  renderFrame: 0,
   loadSeq: 0,
   layoutBound: false,
   layoutTimer: null,
   landscape: null,
+  layoutKey: "",
+  total: 0,
+  nextOffset: 0,
+  hasMore: false,
+  routeHeight: 300,
+  routeHeights: Object.create(null),
+  windowStart: 0,
+  windowEnd: 0,
   signature: "",
 };
 
 const screenrecordState = {
   initialized: false,
   loading: false,
+  loadingMore: false,
   videos: [],
   loadSeq: 0,
   signature: "",
+  total: 0,
+  nextOffset: 0,
+  hasMore: false,
+  rowHeight: 80,
+  windowStart: 0,
+  windowEnd: 0,
+  renderFrame: 0,
 };
 
 let logsActiveTab = "dashcam";

@@ -12,6 +12,7 @@ window.HomeDrive = (() => {
   const onroadAlertText2El = document.getElementById("carrotOnroadAlertText2");
   const stageLoadingEl = document.getElementById("carrotStageLoading");
   const stageLoadingTextEl = document.getElementById("carrotStageLoadingText");
+  const stageLoadingDetailEl = document.getElementById("carrotStageLoadingDetail");
   const statusEl = document.getElementById("carrotStageStatus");
   const metaEl = document.getElementById("carrotStageMeta");
   const debugEl = document.getElementById("carrotStageDebug");
@@ -47,9 +48,9 @@ window.HomeDrive = (() => {
     focalY: 2648,
   };
   const DISPLAY_MODES = [
-    { key: "fit", labelKey: "display_fit", fallbackLabel: "Fit", shortLabel: "1X" },
-    { key: "normal", labelKey: "display_normal", fallbackLabel: "Normal", shortLabel: "2X" },
-    { key: "crop", labelKey: "display_crop", fallbackLabel: "Crop", shortLabel: "3X" },
+    { key: "fit", labelKey: "display_fit", fallbackLabel: "Fit" },
+    { key: "normal", labelKey: "display_normal", fallbackLabel: "Normal" },
+    { key: "crop", labelKey: "display_crop", fallbackLabel: "Crop" },
   ];
   const HUD_TEXT_FONT = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   const DISPLAY_MODE_STORAGE_KEY = "home_drive_display_mode_index";
@@ -57,6 +58,9 @@ window.HomeDrive = (() => {
   const MOBILE_DPR_CAP = 1.25;
   const DESKTOP_DPR_CAP = 1.5;
   const RENDER_INTERVAL_MS = 33;  // ~30fps for denser plot data (C3: 20Hz/50ms)
+  const CAMERA_FRAME_RECHECK_MS = 250;
+  const MIN_ROAD_VIDEO_WIDTH = 320;
+  const MIN_ROAD_VIDEO_HEIGHT = 180;
   const PATH_PALETTE = [
     { r: 255, g: 82, b: 82 },
     { r: 255, g: 153, b: 0 },
@@ -127,6 +131,16 @@ window.HomeDrive = (() => {
     nextRetryAt: 0,
   };
 
+  function isMetricDisplay() {
+    return finiteNumber(paramsState.IsMetric, defaultParams.IsMetric) !== 0;
+  }
+
+  function displayDistanceMeters(distanceMeters) {
+    const distance = Number(distanceMeters);
+    if (!Number.isFinite(distance)) return NaN;
+    return isMetricDisplay() ? distance : distance * 3.28084;
+  }
+
   let paramsState = { ...defaultParams };
   let displayModeIndex = 1;
   let overlaySizeSignature = "";
@@ -186,6 +200,13 @@ window.HomeDrive = (() => {
   let _renderRafId = null;
   let _renderTimerId = null;
   let _renderVideoFrameId = null;
+  let _cameraFrameRecheckId = null;
+  let _roadCameraStreamState = {
+    stream: null,
+    decodedFramesAtBind: null,
+    currentTimeAtBind: 0,
+    firstRenderableSeen: false,
+  };
   let _pendingRenderState = {
     force: true,
     overlayDirty: true,
@@ -270,6 +291,7 @@ window.HomeDrive = (() => {
       paramsState.ShowPathEnd,
       paramsState.ShowLaneInfo,
       paramsState.ShowRadarInfo,
+      paramsState.IsMetric,
     ].join("|");
   }
 
@@ -303,6 +325,7 @@ window.HomeDrive = (() => {
       plotInputSignature(plotData),
       paramsState.ShowPlotMode,
       paramsState.CustomSR,
+      paramsState.IsMetric,
     ].join("|");
   }
 
@@ -1360,6 +1383,45 @@ window.HomeDrive = (() => {
     statusEl.textContent = text;
   }
 
+  function getCarrotVisionState() {
+    return window.CarrotVisionState || {};
+  }
+
+  function isCarrotVisionActive() {
+    const state = getCarrotVisionState();
+    return Boolean(state.active ?? window.CARROT_VISION_ACTIVE);
+  }
+
+  function isCarrotVisionAvailable() {
+    const state = getCarrotVisionState();
+    return Boolean(state.available ?? window.CARROT_VISION_AVAILABLE);
+  }
+
+  function getCarrotVisionStatusText(fallback = "") {
+    const state = getCarrotVisionState();
+    return String(state.statusText || fallback || "");
+  }
+
+  function getCarrotVisionDetailText() {
+    const state = getCarrotVisionState();
+    return String(state.detailText || "");
+  }
+
+  function getCarrotVisionDisabledMessage() {
+    const state = getCarrotVisionState();
+    return String(state.disabledMessage || window.CARROT_VISION_DISABLED_MESSAGE || getUIText("disable_dm_inactive", "DisableDM is inactive."));
+  }
+
+  function setCarrotVisionRenderPhase(phase, detail = {}) {
+    if (typeof window.CarrotVisionSetPhase !== "function") return;
+    window.CarrotVisionSetPhase(phase, {
+      source: "home_drive",
+      updateRtcStatus: false,
+      render: false,
+      ...detail,
+    });
+  }
+
   function setMeta(text) {
     if (lastMeta === text) return;
     lastMeta = text;
@@ -1461,6 +1523,8 @@ window.HomeDrive = (() => {
     const maxWidth = Math.round(stageWidth * maxWidthRatio);
     const primaryColor = alertStatus === ALERT_STATUS_CRITICAL ? "#ff5a63" : "#ffb12a";
     const secondaryColor = alertStatus === ALERT_STATUS_CRITICAL ? "#ffe3e5" : "#ffffff";
+    const alertScale = ONROAD_ALERT_SCALE;
+    const alertPx = (value) => `${value * alertScale}px`;
 
     const signature = [
       Math.round(stageWidth),
@@ -1476,7 +1540,7 @@ window.HomeDrive = (() => {
       offsetY,
       gap,
       maxWidth,
-      ONROAD_ALERT_SCALE,
+      alertScale,
       primaryColor,
       secondaryColor,
     ].join("|");
@@ -1492,7 +1556,19 @@ window.HomeDrive = (() => {
     onroadAlertEl.style.setProperty("--carrot-alert-max-width", `${maxWidth}px`);
     onroadAlertEl.style.setProperty("--carrot-alert-font1", `${fontSize1}px`);
     onroadAlertEl.style.setProperty("--carrot-alert-font2", `${Math.max(fontSize2, 0)}px`);
-    onroadAlertEl.style.setProperty("--carrot-alert-scale", `${ONROAD_ALERT_SCALE}`);
+    onroadAlertEl.style.setProperty("--carrot-alert-pad-min", alertPx(4));
+    onroadAlertEl.style.setProperty("--carrot-alert-pad-fluid", `${1.4 * alertScale}vw`);
+    onroadAlertEl.style.setProperty("--carrot-alert-pad-max", alertPx(12));
+    onroadAlertEl.style.setProperty("--carrot-alert-shadow-y-lg", alertPx(8));
+    onroadAlertEl.style.setProperty("--carrot-alert-shadow-blur-lg", alertPx(24));
+    onroadAlertEl.style.setProperty("--carrot-alert-shadow-y-sm", alertPx(3));
+    onroadAlertEl.style.setProperty("--carrot-alert-shadow-blur-sm", alertPx(10));
+    onroadAlertEl.style.setProperty("--carrot-alert-outline-strong-pos", alertPx(2.25));
+    onroadAlertEl.style.setProperty("--carrot-alert-outline-strong-neg", alertPx(-2.25));
+    onroadAlertEl.style.setProperty("--carrot-alert-outline-soft-pos", alertPx(1.8));
+    onroadAlertEl.style.setProperty("--carrot-alert-outline-soft-neg", alertPx(-1.8));
+    onroadAlertEl.style.setProperty("--carrot-alert-stroke-primary", alertPx(0.55));
+    onroadAlertEl.style.setProperty("--carrot-alert-stroke-secondary", alertPx(0.48));
     onroadAlertEl.style.setProperty("--carrot-alert-primary-color", primaryColor);
     onroadAlertEl.style.setProperty("--carrot-alert-secondary-color", secondaryColor);
 
@@ -1505,7 +1581,7 @@ window.HomeDrive = (() => {
     if (!displayModeButton) return;
     const mode = DISPLAY_MODES[displayModeIndex] || DISPLAY_MODES[1];
     const label = getDisplayModeLabel(mode);
-    displayModeButton.textContent = mode.shortLabel || label || "2X";
+    displayModeButton.textContent = label || "Normal";
     displayModeButton.setAttribute("aria-label", `${getUIText("display_mode", "Display mode")}: ${label}`);
     displayModeButton.title = label;
   }
@@ -1530,11 +1606,85 @@ window.HomeDrive = (() => {
       videoEl.srcObject = stream;
     }
 
-    const hasStream = Boolean((sourceVideoEl === videoEl ? sourceVideoEl : videoEl).srcObject || stream);
+    const activeStream = (sourceVideoEl === videoEl ? sourceVideoEl : videoEl).srcObject || stream;
+    if (_roadCameraStreamState.stream !== activeStream) {
+      _roadCameraStreamState = {
+        stream: activeStream,
+        decodedFramesAtBind: activeStream ? getDecodedVideoFrameCount(videoEl) : null,
+        currentTimeAtBind: activeStream ? Number(videoEl.currentTime || 0) : 0,
+        firstRenderableSeen: false,
+      };
+      cancelCameraFrameRecheck();
+    }
+
+    const hasStream = Boolean(activeStream);
     if (hasStream && videoEl.paused) {
       videoEl.play().catch(() => {});
     }
     return hasStream;
+  }
+
+  function hasLiveVideoTrack(video) {
+    const stream = video?.srcObject;
+    if (!stream || stream.active === false) return false;
+    if (typeof stream.getVideoTracks !== "function") return true;
+    const tracks = stream.getVideoTracks();
+    if (!tracks.length) return false;
+    return tracks.some((track) => track && track.readyState !== "ended" && track.muted !== true);
+  }
+
+  function getDecodedVideoFrameCount(video) {
+    try {
+      if (typeof video?.getVideoPlaybackQuality === "function") {
+        const quality = video.getVideoPlaybackQuality();
+        const total = Number(quality?.totalVideoFrames);
+        if (Number.isFinite(total)) return total;
+      }
+    } catch {}
+    const webkitCount = Number(video?.webkitDecodedFrameCount);
+    return Number.isFinite(webkitCount) ? webkitCount : null;
+  }
+
+  function isRoadCameraFrameRenderable(video) {
+    if (!video || !video.srcObject || !hasLiveVideoTrack(video)) return false;
+    const videoWidth = Number(video.videoWidth || 0);
+    const videoHeight = Number(video.videoHeight || 0);
+    if (videoWidth < MIN_ROAD_VIDEO_WIDTH || videoHeight < MIN_ROAD_VIDEO_HEIGHT) return false;
+    if (Number(video.readyState || 0) < 2) return false;
+    if (_roadCameraStreamState.firstRenderableSeen) return true;
+
+    const decodedFrames = getDecodedVideoFrameCount(video);
+    const baselineFrames = _roadCameraStreamState.decodedFramesAtBind;
+    if (decodedFrames != null && (baselineFrames == null ? decodedFrames > 0 : decodedFrames > baselineFrames)) {
+      _roadCameraStreamState.firstRenderableSeen = true;
+      return true;
+    }
+
+    const currentTime = Number(video.currentTime || 0);
+    const baselineTime = Number(_roadCameraStreamState.currentTimeAtBind || 0);
+    if (Number.isFinite(currentTime) && currentTime > baselineTime + 0.05 && video.paused !== true) {
+      _roadCameraStreamState.firstRenderableSeen = true;
+      return true;
+    }
+    if (decodedFrames == null && Number(video.readyState || 0) >= 3 && video.paused !== true) {
+      _roadCameraStreamState.firstRenderableSeen = true;
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleCameraFrameRecheck() {
+    if (_cameraFrameRecheckId != null || !isStageVisible() || !isCarrotVisionActive()) return;
+    _cameraFrameRecheckId = window.setTimeout(() => {
+      _cameraFrameRecheckId = null;
+      requestRender({ force: true, overlayDirty: true, hudDirty: true });
+    }, CAMERA_FRAME_RECHECK_MS);
+  }
+
+  function cancelCameraFrameRecheck() {
+    if (_cameraFrameRecheckId == null) return;
+    window.clearTimeout(_cameraFrameRecheckId);
+    _cameraFrameRecheckId = null;
   }
 
   let _lastStageReady = null;
@@ -1543,13 +1693,13 @@ window.HomeDrive = (() => {
     if (_lastStageReady === r) return;
     _lastStageReady = r;
     stageEl.classList.toggle("is-stream-ready", r);
-    videoEl.style.display = r ? "block" : "none";
   }
 
   let _lastStageLoading = null;
   let _lastStageLoadingText = "";
+  let _lastStageLoadingDetail = "";
 
-  function setStageLoading(loading, text = getUIText("connecting", "Connecting...")) {
+  function setStageLoading(loading, text = getUIText("connecting", "Connecting..."), detail = "") {
     const l = Boolean(loading);
     if (_lastStageLoading !== l) {
       _lastStageLoading = l;
@@ -1561,6 +1711,12 @@ window.HomeDrive = (() => {
     if (stageLoadingTextEl && _lastStageLoadingText !== text) {
       _lastStageLoadingText = text;
       stageLoadingTextEl.textContent = text;
+    }
+    const detailText = l ? String(detail || "") : "";
+    if (stageLoadingDetailEl && _lastStageLoadingDetail !== detailText) {
+      _lastStageLoadingDetail = detailText;
+      stageLoadingDetailEl.textContent = detailText;
+      stageLoadingDetailEl.hidden = !detailText;
     }
   }
 
@@ -2465,7 +2621,7 @@ window.HomeDrive = (() => {
     if (!left || !right) return;
 
     drawPolyline([left, right], "rgba(255,255,255,0.92)", 3.0);
-    const labelText = `${tfDistance.toFixed(1)}(${finiteNumber(longitudinalPlan?.tFollow, 0).toFixed(2)})`;
+    const labelText = `${displayDistanceMeters(tfDistance).toFixed(1)}(${finiteNumber(longitudinalPlan?.tFollow, 0).toFixed(2)})`;
     const labelAnchor = clampTextAnchor(
       { x: right.x + 10, y: right.y - 4 },
       labelText,
@@ -2572,7 +2728,7 @@ window.HomeDrive = (() => {
     const projectionLine = getRadarProjectionLine(model);
     if (!projectionLine) return;
     const radarLatFactor = finiteNumber(paramsState.RadarLatFactor, 0) / 100.0;
-    const isMetric = finiteNumber(paramsState.IsMetric, 1) !== 0;
+    const isMetric = isMetricDisplay();
 
     for (const radar of getRadarTracks(radarState)) {
       const dRel = finiteNumber(radar?.dRel, 0);
@@ -2611,12 +2767,12 @@ window.HomeDrive = (() => {
         drawRadarSpeedBadge({ x: center.x, y: center.y }, speedValue.toFixed(0), badgeColor);
 
         if (showRadarInfo >= 2) {
-          drawCanvasOutlinedText(finiteNumber(radar?.yRel, 0).toFixed(1), center.x, center.y - 40, {
+          drawCanvasOutlinedText(displayDistanceMeters(finiteNumber(radar?.yRel, 0)).toFixed(1), center.x, center.y - 40, {
             fontSize: 30,
             fontWeight: 900,
             strokeWidth: 3.8,
           });
-          const distanceValue = isMetric ? dRel : dRel * 0.621371;
+          const distanceValue = displayDistanceMeters(dRel);
           drawCanvasOutlinedText(distanceValue.toFixed(1), center.x, center.y + 30, {
             fontSize: 30,
             fontWeight: 900,
@@ -3413,19 +3569,19 @@ window.HomeDrive = (() => {
     const hudState = runtimeState.hudState;
     const brokerServices = runtimeState.brokerServices;
 
-    renderOnroadAlert(stageWidth, stageHeight, hudState?.selfdriveState);
-
-    if (!window.CARROT_VISION_ACTIVE) {
+    if (!isCarrotVisionActive()) {
       if (forceAll || _lastOverlaySig !== "vision-disabled" || _lastHudSig !== "vision-disabled") {
         _lastOverlaySig = "vision-disabled";
         _lastHudSig = "vision-disabled";
         _lastPlotInputSig = "off";
+        cancelCameraFrameRecheck();
+        hideOnroadAlert();
         setStageLoading(false);
         setStageReady(false);
         clearOverlay(canvasEl.width || 1, canvasEl.height || 1);
         clearHud(hudCanvasEl.width || 1, hudCanvasEl.height || 1);
-        setStatus(window.CARROT_VISION_AVAILABLE === false
-          ? (window.CARROT_VISION_DISABLED_MESSAGE || getUIText("disable_dm_inactive", "DisableDM is inactive."))
+        setStatus(!isCarrotVisionAvailable()
+          ? getCarrotVisionDisabledMessage()
           : getUIText("start_vision_hint", "Tap the start button to enable drive vision."));
         setMeta("");
         setDebug("");
@@ -3434,14 +3590,18 @@ window.HomeDrive = (() => {
     }
 
     const hasStream = syncSourceStream();
-    if (!hasStream || !videoEl.videoWidth || !videoEl.videoHeight) {
+    if (!hasStream || !isRoadCameraFrameRenderable(videoEl)) {
+      if (hasStream) {
+        setCarrotVisionRenderPhase("first-frame-waiting", { reason: "camera stream waiting first frame" });
+      }
       _lastOverlaySig = "";
       _lastHudSig = "";
-      setStageLoading(true, getUIText("connecting", "Connecting..."));
+      hideOnroadAlert();
+      setStageLoading(true, getCarrotVisionStatusText(getUIText("connecting", "Connecting...")), getCarrotVisionDetailText());
       setStageReady(false);
       clearOverlay(canvasEl.width || 1, canvasEl.height || 1);
       clearHud(hudCanvasEl.width || 1, hudCanvasEl.height || 1);
-      setStatus(getUIText("waiting_road_stream", "Waiting road camera stream..."));
+      setStatus(getCarrotVisionStatusText(getUIText("waiting_road_stream", "Waiting road camera stream...")));
       setMeta("road:- model:- path:-");
       setDebug("LD:- LT:- SR:-");
       applyCarrotHudLayout({
@@ -3452,12 +3612,15 @@ window.HomeDrive = (() => {
         width: stageWidth,
         height: stageHeight,
       });
+      scheduleCameraFrameRecheck();
       return;
     }
+    cancelCameraFrameRecheck();
 
     const videoWidth = videoEl.videoWidth;
     const videoHeight = videoEl.videoHeight;
     syncCanvasSize(videoWidth, videoHeight, stageWidth, stageHeight);
+    renderOnroadAlert(stageWidth, stageHeight, hudState?.selfdriveState);
     // Use raw radar state directly — no interpolation (matches C3/CarrotLink).
     // C3 reads SubMaster every frame; CarrotLink reads snapshot directly.
     // Position smoothing is handled in projectLeadBox() via EMA.
@@ -3505,6 +3668,7 @@ window.HomeDrive = (() => {
 
     applyStageTransform(transform);
     setStageReady(true);
+    setCarrotVisionRenderPhase("ready", { reason: "camera frame renderable" });
     applyCarrotHudLayout(viewportRect);
     setStageLoading(false);
 
@@ -3546,6 +3710,7 @@ window.HomeDrive = (() => {
   }
 
   function cancelScheduledRender() {
+    cancelCameraFrameRecheck();
     if (_renderRafId != null) {
       window.cancelAnimationFrame(_renderRafId);
       _renderRafId = null;
@@ -3607,7 +3772,7 @@ window.HomeDrive = (() => {
       _pendingRenderState.overlayDirty &&
       !_pendingRenderState.force &&
       typeof videoEl.requestVideoFrameCallback === "function" &&
-      window.CARROT_VISION_ACTIVE &&
+      isCarrotVisionActive() &&
       !videoEl.paused &&
       videoEl.readyState >= 2
     );
@@ -3684,7 +3849,7 @@ window.HomeDrive = (() => {
   }
 
   async function handleStageFullscreenToggle(event) {
-    if (!window.CARROT_VISION_ACTIVE) return;
+    if (!isCarrotVisionActive()) return;
     if (shouldIgnoreStageFullscreenToggle(event?.target)) return;
     if (typeof window.ToggleCarrotFullscreen !== "function") return;
     await window.ToggleCarrotFullscreen({ quiet: false }).catch(() => {});
@@ -3697,8 +3862,9 @@ window.HomeDrive = (() => {
 
   function handleLifecycleChange() {
     if (isStageVisible()) {
-      if (window.CARROT_VISION_ACTIVE) {
-        setStageLoading(true, getUIText("connecting", "Connecting..."));
+      if (isCarrotVisionActive()) {
+        const phase = String(getCarrotVisionState().phase || "");
+        setStageLoading(phase !== "ready", getCarrotVisionStatusText(getUIText("connecting", "Connecting...")), getCarrotVisionDetailText());
       }
       refreshOverlayInfo().catch(() => {});
       requestFullRender();
@@ -3717,7 +3883,12 @@ window.HomeDrive = (() => {
   window.addEventListener("carrot:render-request", (event) => requestRender(event.detail || {}));
   window.addEventListener("carrot:pagechange", handleLifecycleChange);
   window.addEventListener("carrot:visionchange", handleLifecycleChange);
+  window.addEventListener("carrot:visionstatechange", handleLifecycleChange);
   document.addEventListener("visibilitychange", handleLifecycleChange);
+  if (typeof ResizeObserver === "function") {
+    const stageResizeObserver = new ResizeObserver(requestFullRender);
+    stageResizeObserver.observe(stageEl);
+  }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", requestFullRender, { passive: true });
     window.visualViewport.addEventListener("scroll", requestFullRender, { passive: true });
@@ -3742,6 +3913,7 @@ window.HomeDrive = (() => {
   return {
     refresh,
     requestRender,
+    renderText: syncDisplayModeButtons,
     setDisplayModeIndex,
   };
 })();

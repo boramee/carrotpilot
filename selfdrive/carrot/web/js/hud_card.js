@@ -17,19 +17,19 @@
   const SURFACE_OVERLAY = "driveOverlay";
   const STRONG_TEXT_SHADOW = "0 1.4px 3.6px rgba(0,0,0,0.94), 0 0 1.2px rgba(0,0,0,0.62)";
   const DRIVE_MODE_TEXT = {
-    ko: {
-      normal: "일반",
-      eco: "에코",
-      safe: "안전",
-      sport: "고속",
-      fast: "고속",
-    },
     en: {
       normal: "Normal",
       eco: "Eco",
       safe: "Safe",
       sport: "Fast",
       fast: "Fast",
+    },
+    ko: {
+      normal: "일반",
+      eco: "에코",
+      safe: "안전",
+      sport: "고속",
+      fast: "고속",
     },
     zh: {
       normal: "普通",
@@ -38,11 +38,27 @@
       sport: "高速",
       fast: "高速",
     },
+    ja: {
+      normal: "通常",
+      eco: "エコ",
+      safe: "安全",
+      sport: "高速",
+      fast: "高速",
+    },
+    fr: {
+      normal: "Normal",
+      eco: "Eco",
+      safe: "Securite",
+      sport: "Rapide",
+      fast: "Rapide",
+    },
   };
   const HUD_LABELS = {
-    ko: { speed: "현재속도", setSpeed: "설정속도", temp: "TEMP", gear: "GEAR", limit: "LIMIT" },
     en: { speed: "Speed", setSpeed: "Set Speed", temp: "TEMP", gear: "GEAR", limit: "LIMIT" },
+    ko: { speed: "현재속도", setSpeed: "설정속도", temp: "TEMP", gear: "GEAR", limit: "LIMIT" },
     zh: { speed: "当前速度", setSpeed: "设定速度", temp: "TEMP", gear: "GEAR", limit: "LIMIT" },
+    ja: { speed: "速度", setSpeed: "設定速度", temp: "TEMP", gear: "GEAR", limit: "LIMIT" },
+    fr: { speed: "Vitesse", setSpeed: "Vitesse reglee", temp: "TEMP", gear: "GEAR", limit: "LIMIT" },
   };
   const HUD_AUX_ROTATE_MS = 1600;
   const HUD_AUX_ICON_PATHS = {
@@ -120,11 +136,11 @@
   }
 
   function currentLang() {
-    return typeof LANG === "string" && HUD_LABELS[LANG] ? LANG : "ko";
+    return typeof LANG === "string" && LANG ? LANG : "en";
   }
 
   function getHudLabels() {
-    return HUD_LABELS[currentLang()] || HUD_LABELS.ko;
+    return HUD_LABELS[currentLang()] || HUD_LABELS.en;
   }
 
   function getBandHeight(density) {
@@ -555,17 +571,29 @@
     const el = $("hudDriveMode");
     if (!el) return;
     const normalized = String(kind || "").toLowerCase();
-    const labels = DRIVE_MODE_TEXT[currentLang()] || DRIVE_MODE_TEXT.ko;
+    const lang = currentLang();
+    const registryLabels = typeof DRIVE_MODES === "object" ? DRIVE_MODES[lang] || DRIVE_MODES.en : null;
+    const labels = Object.assign({}, DRIVE_MODE_TEXT.en, DRIVE_MODE_TEXT[lang] || {}, registryLabels || {});
     const translated = labels[normalized] || name || labels.normal;
     if (el.textContent !== translated) el.textContent = translated;
     if (el.dataset.kind !== (normalized || "normal")) el.dataset.kind = normalized || "normal";
   }
 
-  function setRoadLimit(speedKph, over, blink) {
+  function isMetricDisplay(value) {
+    return value == null ? true : Boolean(value);
+  }
+
+  function formatDisplaySpeedKph(speedKph, isMetric) {
+    if (speedKph == null || !isFinite(speedKph)) return "--";
+    const displaySpeed = isMetricDisplay(isMetric) ? Number(speedKph) : Number(speedKph) * 0.621371;
+    return `${Math.round(displaySpeed)}`;
+  }
+
+  function setRoadLimit(speedKph, over, blink, isMetric) {
     const el = $("hudRoadLimitDisplay");
     if (!el) return;
     const limitLabel = getHudLabels().limit;
-    const text = speedKph == null || !isFinite(speedKph) ? `${limitLabel} --` : `${limitLabel} ${Math.round(speedKph)}`;
+    const text = `${limitLabel} ${formatDisplaySpeedKph(speedKph, isMetric)}`;
     if (el.textContent !== text) el.textContent = text;
     const overStr = over ? "1" : "0";
     if (el.dataset.over !== overStr) el.dataset.over = overStr;
@@ -600,7 +628,7 @@
     setText("hudGapNum", display);
   }
 
-  function setTemp(temp) {
+  function setTemp(temp, isMetric) {
     const reasonEl = $("hudTempReason");
     const speedEl = $("hudTempSpeed");
     if (!reasonEl || !speedEl) return;
@@ -620,7 +648,7 @@
 
     const reason = String(temp.source || getHudLabels().temp).trim();
     const color = temp.is_decel ? "#FFC94A" : "#34C96E";
-    const speedText = `${Math.round(temp.speed)}`;
+    const speedText = formatDisplaySpeedKph(temp.speed, isMetric);
     const nextSignature = `${lang}|${reason || "TEMP"}|${speedText}|${color}`;
     if (lastHudTempSignature === nextSignature) return;
     lastHudTempSignature = nextSignature;
@@ -631,12 +659,12 @@
     if (speedEl.style.color !== color) speedEl.style.color = color;
   }
 
-  function setSpeed(vEgoKph) {
-    setText("hudSpeed", vEgoKph == null || !isFinite(vEgoKph) ? "--" : `${Math.round(vEgoKph)}`);
+  function setSpeed(vEgoKph, isMetric) {
+    setText("hudSpeed", formatDisplaySpeedKph(vEgoKph, isMetric));
   }
 
-  function setSetSpeed(vSetKph) {
-    setText("hudSetSpeed", vSetKph == null || !isFinite(vSetKph) ? "--" : `${Math.round(vSetKph)}`);
+  function setSetSpeed(vSetKph, isMetric) {
+    setText("hudSetSpeed", formatDisplaySpeedKph(vSetKph, isMetric));
   }
 
   function setGear(txt, gearStep) {
@@ -762,18 +790,19 @@
 
     update(payload) {
       if (!payload) return;
+      const isMetric = isMetricDisplay(payload.isMetric);
       syncStaticHudText();
       setMetrics(payload.cpuTempC, payload.memPct, payload.diskPct, payload.voltageV);
-      setSpeed(payload.vEgoKph);
-      setSetSpeed(payload.vSetKph);
-      setTemp(payload.temp);
+      setSpeed(payload.vEgoKph, isMetric);
+      setSetSpeed(payload.vSetKph, isMetric);
+      setTemp(payload.temp, isMetric);
       setBars(payload.tfBars != null ? payload.tfBars : payload.tfGap);
       setGapNum(payload.tfGap);
       setGear(payload.gear, payload.gearStep);
       setSignalDot(payload.tlight || "off");
       if (payload.driveMode) setDriveMode(payload.driveMode.name, payload.driveMode.kind);
       else setDriveMode("", "normal");
-      setRoadLimit(payload.speedLimitKph, payload.speedLimitOver, payload.speedLimitBlink);
+      setRoadLimit(payload.speedLimitKph, payload.speedLimitOver, payload.speedLimitBlink, isMetric);
       setConnectivity(payload.apm);
     },
 

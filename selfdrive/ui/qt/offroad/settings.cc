@@ -7,6 +7,11 @@
 
 #include <QDebug>
 #include <QProcess>
+#include <QScrollArea>
+#include <QScroller>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "common/watchdog.h"
 #include "common/util.h"
@@ -460,6 +465,180 @@ void SettingsWindow::setCurrentPanel(int index, const QString &param) {
   nav_btns->buttons()[index]->setChecked(true);
 }
 
+AutoTunerHistoryPanel::AutoTunerHistoryPanel(QWidget* parent) : QFrame(parent) {
+  QVBoxLayout *main_layout = new QVBoxLayout(this);
+  main_layout->setContentsMargins(50, 50, 50, 50);
+
+  QLabel *title = new QLabel(tr("Auto-Tuner History Log v2"));
+  title->setStyleSheet("font-size: 60px; font-weight: bold; margin-bottom: 20px; color: white;");
+  main_layout->addWidget(title);
+
+  QPushButton *btn_clear = new QPushButton(tr("Clear All"));
+  btn_clear->setStyleSheet("background-color: #bb3333; font-size: 45px; padding: 30px; border-radius: 10px; margin-bottom: 30px; color: white; font-weight: bold;");
+  connect(btn_clear, &QPushButton::clicked, this, &AutoTunerHistoryPanel::clearAll);
+  main_layout->addWidget(btn_clear);
+
+  QScrollArea *scroll = new QScrollArea();
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setStyleSheet("QScrollArea { background: transparent; } QWidget { background: transparent; }");
+  QScroller::grabGesture(scroll->viewport(), QScroller::LeftMouseButtonGesture);
+
+  QWidget *scroll_widget = new QWidget();
+  list_layout = new QVBoxLayout(scroll_widget);
+  list_layout->setSpacing(30);
+  
+  scroll->setWidget(scroll_widget);
+  main_layout->addWidget(scroll);
+
+  refreshHistory();
+}
+
+void AutoTunerHistoryPanel::showEvent(QShowEvent *event) {
+  refreshHistory();
+  QFrame::showEvent(event);
+}
+
+void AutoTunerHistoryPanel::refreshHistory() {
+  QLayoutItem *child;
+  while ((child = list_layout->takeAt(0)) != nullptr) {
+    if (child->widget()) delete child->widget();
+    delete child;
+  }
+
+  QString raw = QString::fromStdString(Params().get("CarrotLearningHistory"));
+  if (raw.isEmpty()) {
+    QLabel *empty = new QLabel(tr("No tuning history available"));
+    empty->setStyleSheet("font-size: 45px; color: #888888;");
+    list_layout->addWidget(empty);
+    list_layout->addStretch();
+    return;
+  }
+
+  QJsonArray arr = QJsonDocument::fromJson(raw.toUtf8()).array();
+  for (int i = 0; i < arr.size(); i++) {
+    QJsonObject item = arr[i].toObject();
+    QString id = item["id"].toString();
+    QString time_str = item["timestamp"].toString();
+    QJsonObject changes = item["changes"].toObject();
+
+    QFrame *row = new QFrame();
+    row->setStyleSheet("background-color: #333333; border-radius: 15px; padding: 20px;");
+    QHBoxLayout *row_layout = new QHBoxLayout(row);
+
+    QString text = QString("<span style='font-size: 35px; color: #aaaaaa;'>%1</span><br>").arg(tr("[%1 Applied]").arg(time_str));
+    for (const QString& group : changes.keys()) {
+      QJsonObject g_items = changes[group].toObject();
+      QString short_group;
+      bool is_en = (QString::fromStdString(Params().get("LanguageSetting")) != "main_ko");
+      if (is_en && group.contains("(")) {
+        short_group = group.split("(").last().replace(")", "");
+      } else {
+        short_group = group.split(" ").first(); // e.g. "가속"
+      }
+      for (const QString& key : g_items.keys()) {
+        QJsonObject info = g_items[key].toObject();
+        text += QString("<span style='font-size: 40px; color: white;'><span style='color:#aaaaaa;'>[%1]</span> <b>%2</b> <span style='font-size:35px; color:#bbbbbb;'>[%3]</span> &nbsp;:&nbsp; %4 ➔ <span style='color:#00ff00; font-weight:bold;'>%5</span></span><br>")
+                  .arg(short_group)
+                  .arg(key)
+                  .arg(info["band_kph"].toString())
+                  .arg(info["current"].toInt())
+                  .arg(info["recommended"].toInt());
+      }
+    }
+
+    QLabel *lbl = new QLabel(text);
+    lbl->setWordWrap(true);
+    row_layout->addWidget(lbl, 1);
+
+    bool is_latest = (i == 0);
+    
+    QPushButton *btn_restore = new QPushButton(tr("Restore"));
+    if (is_latest) {
+      btn_restore->setStyleSheet("background-color: #178644; font-size: 40px; padding: 20px; border-radius: 10px; color: white;");
+    } else {
+      btn_restore->setStyleSheet("background-color: #333333; font-size: 40px; padding: 20px; border-radius: 10px; color: #666666;");
+      btn_restore->setEnabled(false);
+    }
+    btn_restore->setFixedSize(200, 120);
+    connect(btn_restore, &QPushButton::clicked, [this, id]() { restoreItem(id); });
+    row_layout->addWidget(btn_restore);
+
+    QPushButton *btn_del = new QPushButton(tr("Delete"));
+    if (is_latest) {
+      btn_del->setStyleSheet("background-color: #555555; font-size: 40px; padding: 20px; border-radius: 10px; color: white;");
+    } else {
+      btn_del->setStyleSheet("background-color: #333333; font-size: 40px; padding: 20px; border-radius: 10px; color: #666666;");
+      btn_del->setEnabled(false);
+    }
+    btn_del->setFixedSize(200, 120);
+    connect(btn_del, &QPushButton::clicked, [this, id]() { deleteItem(id); });
+    row_layout->addWidget(btn_del);
+
+    list_layout->addWidget(row);
+  }
+  list_layout->addStretch();
+}
+
+void AutoTunerHistoryPanel::restoreItem(const QString& id) {
+  if (ConfirmationDialog::confirm(tr("Are you sure you want to restore the parameters to this state?"), tr("Restore"), this)) {
+    QString raw = QString::fromStdString(Params().get("CarrotLearningHistory"));
+    QJsonArray arr = QJsonDocument::fromJson(raw.toUtf8()).array();
+    QJsonArray new_arr;
+    
+    for (int i = 0; i < arr.size(); i++) {
+      QJsonObject entry = arr[i].toObject();
+      if (entry["id"].toString() == id) {
+        // 복구 로직: 이력에 저장된 'current' 값을 다시 Params에 기록
+        QJsonObject changes = entry["changes"].toObject();
+        for (const QString& group : changes.keys()) {
+          QJsonObject g_items = changes[group].toObject();
+          for (const QString& key : g_items.keys()) {
+            int prev_val = g_items[key].toObject()["current"].toInt();
+            Params().putInt(key.toStdString(), prev_val);
+          }
+        }
+      } else {
+        new_arr.append(entry);
+      }
+    }
+    
+    if (new_arr.isEmpty()) {
+      Params().remove("CarrotLearningHistory");
+    } else {
+      Params().put("CarrotLearningHistory", QJsonDocument(new_arr).toJson(QJsonDocument::Compact).toStdString());
+    }
+    refreshHistory();
+    ConfirmationDialog::alert(tr("Restored to previous values successfully."), this);
+  }
+}
+
+void AutoTunerHistoryPanel::deleteItem(const QString& id) {
+  if (ConfirmationDialog::confirm(tr("Are you sure you want to delete this item?"), tr("Delete"), this)) {
+    QString raw = QString::fromStdString(Params().get("CarrotLearningHistory"));
+    QJsonArray arr = QJsonDocument::fromJson(raw.toUtf8()).array();
+    QJsonArray new_arr;
+    for (int i = 0; i < arr.size(); i++) {
+      if (arr[i].toObject()["id"].toString() != id) {
+        new_arr.append(arr[i]);
+      }
+    }
+    if (new_arr.isEmpty()) {
+      Params().remove("CarrotLearningHistory");
+    } else {
+      Params().put("CarrotLearningHistory", QJsonDocument(new_arr).toJson(QJsonDocument::Compact).toStdString());
+    }
+    refreshHistory();
+  }
+}
+
+void AutoTunerHistoryPanel::clearAll() {
+  if (ConfirmationDialog::confirm(tr("Are you sure you want to delete all history? (This will not restore parameters to their previous values)"), tr("Clear All"), this)) {
+    Params().remove("CarrotLearningHistory");
+    refreshHistory();
+  }
+}
+
 SettingsWindow::SettingsWindow(QWidget *parent) : QFrame(parent) {
 
   // setup two main layouts
@@ -649,6 +828,14 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
     updateButtonStyles();
   });
 
+  QPushButton* history_btn = new QPushButton(tr("Tuning history"));
+  history_btn->setObjectName("history_btn");
+  QObject::connect(history_btn, &QPushButton::clicked, this, [this]() {
+    this->currentCarrotIndex = 6;
+    this->togglesCarrot(6);
+    updateButtonStyles();
+  });
+
 
   updateButtonStyles();
 
@@ -658,6 +845,7 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   select_layout->addWidget(latLong_btn);
   select_layout->addWidget(disp_btn);
   select_layout->addWidget(path_btn);
+  select_layout->addWidget(history_btn);
   carrotLayout->addLayout(select_layout, 0);
 
   QWidget* toggles = new QWidget();
@@ -692,6 +880,7 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   //cruiseToggles->addItem(new CValueControl("MyHighModeFactor", "DRIVEMODE: HIGH ratio(100%)", "AccelRatio control ratio", 100, 300, 10));
 
   latLongToggles = new ListWidget(this);
+  latLongToggles->addItem(new CValueControl("CarrotLearningActive", tr("Auto-Tuner: Learning"), tr("Learn from driver interventions (gas/brake) and recommend parameter adjustments when parking. 0=Off, 1=On"), 0, 1, 1));
   latLongToggles->addItem(new CValueControl("UseLaneLineSpeed", tr("Laneline mode speed(0)"), tr("Laneline mode, lat_mpc control used"), 0, 200, 5));
   latLongToggles->addItem(new CValueControl("UseLaneLineCurveSpeed", tr("Laneline mode curve speed(0)"), tr("Laneline mode, high speed only"), 0, 200, 5));
   latLongToggles->addItem(new CValueControl("AdjustLaneOffset", tr("AdjustLaneOffset(0)cm"), "", 0, 500, 5));
@@ -858,7 +1047,6 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   speedToggles = new ListWidget(this);
   speedToggles->addItem(new CValueControl("AutoCurveSpeedLowerLimit", tr("CURVE: Lower limit speed(30)"), tr("When you approach a curve, reduce your speed. Minimum speed"), 30, 200, 5));
   speedToggles->addItem(new CValueControl("AutoCurveSpeedFactor", tr("CURVE: Auto Control ratio(100%)"), "", 50, 300, 1));
-  speedToggles->addItem(new CValueControl("AutoCurveSpeedAggressiveness", tr("CURVE: Aggressiveness (100%)"), "", 50, 300, 1));
   speedToggles->addItem(new CValueControl("AutoRoadSpeedLimitOffset", tr("RoadSpeedLimitOffset(-1)"), tr("-1:NotUsed,RoadLimitSpeed+Offset"), -1, 100, 1));
   speedToggles->addItem(new CValueControl("AutoRoadSpeedAdjust", tr("Auto Roadlimit Speed adjust (50%)"), "", -1, 100, 5));
   speedToggles->addItem(new CValueControl("AutoNaviSpeedCtrlEnd", tr("SpeedCamDecelEnd(6s)"), tr("Sets the deceleration completion point. A larger value completes deceleration farther away from the camera."), 3, 20, 1));
@@ -884,7 +1072,14 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
   toggles_layout->addWidget(startToggles);
   toggles_layout->addWidget(speedToggles);
   ScrollView* toggles_view = new ScrollView(toggles, this);
-  carrotLayout->addWidget(toggles_view, 1);
+
+  content_stack = new QStackedWidget(this);
+  content_stack->addWidget(toggles_view);
+
+  AutoTunerHistoryPanel* historyPanel = new AutoTunerHistoryPanel(this);
+  content_stack->addWidget(historyPanel);
+
+  carrotLayout->addWidget(content_stack, 1);
 
   homeScreen->setLayout(carrotLayout);
   main_layout->addWidget(homeScreen);
@@ -894,20 +1089,30 @@ CarrotPanel::CarrotPanel(QWidget* parent) : QWidget(parent) {
 }
 
 void CarrotPanel::togglesCarrot(int widgetIndex) {
-  startToggles->setVisible(widgetIndex == 0);
-  cruiseToggles->setVisible(widgetIndex == 1);
-  speedToggles->setVisible(widgetIndex == 2);
-  latLongToggles->setVisible(widgetIndex == 3);
-  dispToggles->setVisible(widgetIndex == 4);
-  pathToggles->setVisible(widgetIndex == 5);
+  if (widgetIndex == 6) {
+    content_stack->setCurrentIndex(1);
+  } else {
+    content_stack->setCurrentIndex(0);
+    startToggles->setVisible(widgetIndex == 0);
+    cruiseToggles->setVisible(widgetIndex == 1);
+    speedToggles->setVisible(widgetIndex == 2);
+    latLongToggles->setVisible(widgetIndex == 3);
+    dispToggles->setVisible(widgetIndex == 4);
+    pathToggles->setVisible(widgetIndex == 5);
+  }
 }
 
 void CarrotPanel::updateButtonStyles() {
   QString styleSheet = R"(
-      #start_btn, #cruise_btn, #speed_btn, #latLong_btn ,#disp_btn, #path_btn {
-        height: 120px; border-radius: 15px; background-color: #393939;
+      #start_btn, #cruise_btn, #speed_btn, #latLong_btn, #disp_btn, #path_btn, #history_btn {
+        height: 100px;
+        font-size: 38px;
+        font-weight: 500;
+        border-radius: 15px;
+        background-color: #393939;
+        color: #E4E4E4;
       }
-      #start_btn:pressed, #cruise_btn:pressed, #speed_btn:pressed, #latLong_btn:pressed, #disp_btn:pressed, #path_btn:pressed {
+      #start_btn:pressed, #cruise_btn:pressed, #speed_btn:pressed, #latLong_btn:pressed, #disp_btn:pressed, #path_btn:pressed, #history_btn:pressed {
         background-color: #4a4a4a;
       }
   )";
@@ -930,6 +1135,9 @@ void CarrotPanel::updateButtonStyles() {
     break;
   case 5:
     styleSheet += "#path_btn { background-color: #33ab4c; }";
+    break;
+  case 6:
+    styleSheet += "#history_btn { background-color: #33ab4c; }";
     break;
   }
 

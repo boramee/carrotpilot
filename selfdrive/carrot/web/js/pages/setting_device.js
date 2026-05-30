@@ -9,6 +9,9 @@ let deviceParamValues = {};
 let deviceGroupLoadPromises = new Map();
 let deviceNetworkInfo = null;
 let deviceNetworkLoadPromise = null;
+let deviceSshStatus = null;
+let deviceSshRefreshTimer = null;
+let deviceSshRefreshInFlight = false;
 let deviceTabLoaded = false;
 
 function mergeDeviceParamValues(values) {
@@ -102,6 +105,7 @@ async function loadDeviceParams(groupId, force = false) {
         "GithubUsername",
         "GithubSshKeys",
       ]);
+      values.SshKeyStatus = await loadDeviceSshStatus(false);
     }
     return mergeDeviceParamValues(values);
   })().catch((err) => {
@@ -229,6 +233,7 @@ async function renderDeviceTab(options = {}) {
   const animateGroups = options.animateGroups !== false;
   const animateItems = options.animateItems !== false;
   renderDeviceGroups({ animateGroups });
+  syncDeviceGroupChrome(CURRENT_DEVICE_GROUP);
   if (!deviceTabLoaded) {
     deviceTabLoaded = true;
     loadDeviceParams("Device", true).then(() => {
@@ -244,7 +249,79 @@ async function selectDeviceGroup(groupId) {
   CURRENT_DEVICE_GROUP = groupId || CURRENT_DEVICE_GROUP;
   renderDeviceGroups();
   syncSettingTabState("device");
+  syncDeviceGroupChrome(CURRENT_DEVICE_GROUP);
   await renderDeviceItems(CURRENT_DEVICE_GROUP, true, { animateItems: true });
+}
+
+async function loadDeviceSshStatus(useCache = true) {
+  if (deviceSshStatus && useCache) return deviceSshStatus;
+  const payload = await requestJson("/api/ssh_keys", { cache: "no-store" });
+  deviceSshStatus = {
+    username: payload.username || "",
+    has_keys: Boolean(payload.has_keys),
+    key_count: Number(payload.key_count || 0),
+    fingerprints: Array.isArray(payload.fingerprints) ? payload.fingerprints : [],
+    updated_at: payload.updated_at || "",
+  };
+  mergeDeviceParamValues({
+    GithubUsername: deviceSshStatus.username,
+    GithubSshKeys: deviceSshStatus.has_keys ? "1" : "",
+    SshKeyStatus: deviceSshStatus,
+  });
+  return deviceSshStatus;
+}
+
+function shouldRefreshDeviceSsh() {
+  const deviceItems = document.getElementById("deviceItems");
+  return (
+    CURRENT_PAGE === "setting" &&
+    CURRENT_SETTING_TAB === "device" &&
+    CURRENT_DEVICE_GROUP === "Developer" &&
+    !document.hidden &&
+    deviceItems &&
+    !deviceItems.hidden &&
+    deviceItems.style.display !== "none"
+  );
+}
+
+function stopDeviceSshRefresh() {
+  if (!deviceSshRefreshTimer) return;
+  window.clearTimeout(deviceSshRefreshTimer);
+  deviceSshRefreshTimer = null;
+}
+
+function scheduleDeviceSshRefresh(delay = DEVICE_SSH_REFRESH_MS) {
+  stopDeviceSshRefresh();
+  if (!shouldRefreshDeviceSsh()) return;
+  deviceSshRefreshTimer = window.setTimeout(() => {
+    deviceSshRefreshTimer = null;
+    refreshDeviceSshPanel().catch((err) => console.error("[DeviceTab]", err));
+  }, delay);
+}
+
+function syncDeviceSshRefresh() {
+  if (shouldRefreshDeviceSsh()) scheduleDeviceSshRefresh();
+  else stopDeviceSshRefresh();
+}
+
+async function refreshDeviceSshPanel() {
+  if (!shouldRefreshDeviceSsh() || deviceSshRefreshInFlight) {
+    syncDeviceSshRefresh();
+    return;
+  }
+
+  deviceSshRefreshInFlight = true;
+  try {
+    const previous = JSON.stringify(deviceSshStatus || {});
+    await loadDeviceSshStatus(false);
+    const next = JSON.stringify(deviceSshStatus || {});
+    if (previous !== next) {
+      await renderDeviceItems("Developer", false, { silentRefresh: true });
+    }
+  } finally {
+    deviceSshRefreshInFlight = false;
+    syncDeviceSshRefresh();
+  }
 }
 
 async function getDeviceGroupValues(groupId) {
@@ -273,6 +350,7 @@ async function renderDeviceItems(groupId, showItemsScreen = true, options = {}) 
 
   if (CURRENT_SETTING_TAB !== "device" || CURRENT_DEVICE_GROUP !== groupId) {
     syncDeviceNetworkRefresh();
+    syncDeviceSshRefresh();
     return;
   }
 
@@ -282,7 +360,9 @@ async function renderDeviceItems(groupId, showItemsScreen = true, options = {}) 
   }
   bindDeviceTabEvents(itemsContainer);
   syncDeviceGroupActiveState(groupId);
+  syncDeviceGroupChrome(groupId);
   syncDeviceNetworkRefresh();
+  syncDeviceSshRefresh();
 }
 
 function renderDeviceGroupItems(groupId, values) {
@@ -354,7 +434,7 @@ function renderDeviceToggleItems(values) {
 }
 
 function renderDeviceDeveloperItems(values) {
-  let html = renderSshKeysRow(values.GithubUsername || "", Boolean(values.GithubSshKeys));
+  let html = renderSshKeysRow(values.SshKeyStatus || values.GithubUsername || "", Boolean(values.GithubSshKeys));
   DEVICE_DEVELOPER_TOGGLES.forEach((toggle) => {
     html += renderDeviceToggleRow(
       toggle.param,
@@ -373,30 +453,68 @@ function syncDeviceGroupActiveState(groupId = CURRENT_DEVICE_GROUP) {
   });
 }
 
+function syncDeviceGroupChrome(groupId = CURRENT_DEVICE_GROUP) {
+  const label = getDeviceGroupLabel(groupId);
+  const meta = document.getElementById("groupMeta");
+  const itemCount = document.getElementById("deviceItems")?.children.length || 0;
+  if (meta && groupId) meta.textContent = `${groupId} / ${itemCount}`;
+  if (typeof settingTitle !== "undefined" && settingTitle) {
+    settingTitle.textContent = (UI_STRINGS[LANG].setting || "Setting") + " - " + label;
+  }
+  if (typeof itemsTitle !== "undefined" && itemsTitle) {
+    itemsTitle.textContent = label;
+  }
+}
+
 async function switchSettingTab(tab) {
   const nextTab = tab === "device" ? "device" : "carrot";
   if (CURRENT_SETTING_TAB === nextTab) {
     syncSettingTabState(nextTab);
-    if (nextTab !== "device") stopDeviceNetworkRefresh();
-    else syncDeviceNetworkRefresh();
+    if (nextTab !== "device") {
+      stopDeviceNetworkRefresh();
+      stopDeviceSshRefresh();
+      if (typeof syncSettingGroupChrome === "function") syncSettingGroupChrome(CURRENT_GROUP);
+    } else {
+      syncDeviceGroupChrome(CURRENT_DEVICE_GROUP);
+      syncDeviceNetworkRefresh();
+      syncDeviceSshRefresh();
+    }
     return;
   }
 
   CURRENT_SETTING_TAB = nextTab;
   syncSettingTabState(nextTab);
-  if (nextTab !== "device") stopDeviceNetworkRefresh();
+  if (nextTab !== "device") {
+    stopDeviceNetworkRefresh();
+    stopDeviceSshRefresh();
+  }
 
   if (nextTab === "device") {
     await renderDeviceTab();
     if (!(typeof isCompactLandscapeMode === "function" && isCompactLandscapeMode()) && typeof showSettingScreen === "function") {
       showSettingScreen("groups", false);
     }
+    syncDeviceGroupChrome(CURRENT_DEVICE_GROUP);
+    syncDeviceSshRefresh();
     return;
+  }
+
+  if (typeof isCompactLandscapeMode === "function" && isCompactLandscapeMode() && typeof activateSettingGroup === "function") {
+    const targetGroup = CURRENT_GROUP || (typeof getLandscapeDefaultSettingGroup === "function" ? getLandscapeDefaultSettingGroup() : null);
+    if (targetGroup) {
+      await activateSettingGroup(targetGroup, false, {
+        animateGroups: false,
+        animateItems: false,
+        scrollMode: "restore",
+      });
+      return;
+    }
   }
 
   if (typeof showSettingScreen === "function") {
     showSettingScreen("groups", false);
   }
+  if (typeof syncSettingGroupChrome === "function") syncSettingGroupChrome(CURRENT_GROUP);
 }
 
 if (settingTabDevice) {
@@ -424,7 +542,10 @@ window.addEventListener("carrot:paramchange", (event) => {
 });
 
 document.addEventListener("visibilitychange", syncDeviceNetworkRefresh);
+document.addEventListener("visibilitychange", syncDeviceSshRefresh);
 window.addEventListener("carrot:pagechange", syncDeviceNetworkRefresh);
+window.addEventListener("carrot:pagechange", syncDeviceSshRefresh);
 window.addEventListener("resize", syncDeviceNetworkRefresh);
+window.addEventListener("resize", syncDeviceSshRefresh);
 
 syncSettingTabState("carrot");

@@ -11,6 +11,8 @@
   const SWIPE_THRESHOLD_PX = 24;
   const DRAG_OPEN_THRESHOLD_PX = 72;
   const DRAG_CLOSE_THRESHOLD_PX = 44;
+  const UPDATE_ACK_STORAGE_KEY = "carrot_tools_update_acknowledged_v1";
+  const UPDATE_ACK_LIMIT = 80;
 
   let activeNotificationId = "";
   let lastHost = null;
@@ -25,8 +27,11 @@
   let collapsingNotificationId = "";
   let collapsingUntil = 0;
   let collapseHost = null;
+  let lastPublishedUnreadCount = 0;
   const detailScrollState = new Map();
   let lastRenderSignature = "";
+  let lastAutoFocusedEntryId = "";
+  const acknowledgedUpdateIds = loadAcknowledgedUpdateIds();
 
   function uiText(key, fallback, vars = null) {
     return typeof getUIText === "function" ? getUIText(key, fallback, vars) : fallback;
@@ -36,6 +41,11 @@
     return String(value ?? "").replace(/\s+$/, "");
   }
 
+  function safeNumber(value, fallback = 0) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+  }
+
   function hashText(value) {
     let hash = 0;
     const text = String(value || "");
@@ -43,6 +53,39 @@
       hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
     }
     return Math.abs(hash).toString(36);
+  }
+
+  function loadAcknowledgedUpdateIds() {
+    try {
+      const raw = global.localStorage?.getItem?.(UPDATE_ACK_STORAGE_KEY);
+      const parsed = JSON.parse(raw || "[]");
+      return new Set(Array.isArray(parsed) ? parsed.filter(Boolean).slice(-UPDATE_ACK_LIMIT) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function persistAcknowledgedUpdateIds() {
+    try {
+      global.localStorage?.setItem?.(
+        UPDATE_ACK_STORAGE_KEY,
+        JSON.stringify(Array.from(acknowledgedUpdateIds).slice(-UPDATE_ACK_LIMIT))
+      );
+    } catch {}
+  }
+
+  function acknowledgeUpdateEntry(entry, card = null) {
+    if (!entry?.ackId || !entry.highlight) return;
+    acknowledgedUpdateIds.add(entry.ackId);
+    while (acknowledgedUpdateIds.size > UPDATE_ACK_LIMIT) {
+      acknowledgedUpdateIds.delete(acknowledgedUpdateIds.values().next().value);
+    }
+    persistAcknowledgedUpdateIds();
+    if (card) {
+      card.classList.remove("is-unread-update");
+      card.classList.add("is-update-read");
+    }
+    global.renderToolsMeta?.();
   }
 
   function getMode() {
@@ -348,17 +391,169 @@
     return normalizeText(job?.log || result.out || job?.error_detail || job?.error || job?.message || "");
   }
 
+  function publishUnreadCount(state = lastState) {
+    const count = unreadCount(state);
+    if (count === lastPublishedUnreadCount) return;
+    lastPublishedUnreadCount = count;
+    global.renderToolsMeta?.();
+  }
+
+  function isNoOutputText(text) {
+    const value = String(text || "").trim().toLowerCase();
+    return value === "(no output)" || value === "no output" || value === "(no data)" || value === "no data" || value === "no sync";
+  }
+
+  function summaryVars(job) {
+    const result = job?.result && typeof job.result === "object" ? job.result : {};
+    return result.summary_vars && typeof result.summary_vars === "object" ? result.summary_vars : {};
+  }
+
+  function localizedResultSummary(job) {
+    const result = job?.result && typeof job.result === "object" ? job.result : {};
+    const key = String(result.summary_key || "").trim();
+    if (!key) return "";
+    return String(uiText(key, "", summaryVars(job)) || "").trim();
+  }
+
+  function friendlyEmptyOutput(job) {
+    const action = String(job?.action || "").trim();
+    switch (action) {
+      case "git_sync":
+        return uiText("git_result_sync_done", "Sync complete. No remote changes.");
+      case "git_pull":
+        return uiText("git_update_up_to_date", "Already up to date");
+      case "git_reset":
+        return uiText("git_result_reset_done", "Reset complete", summaryVars(job));
+      case "git_checkout":
+        return uiText("git_result_checkout_done", "Branch changed", summaryVars(job));
+      case "git_remote_set":
+        return uiText("git_result_remote_set_done", "Repository changed");
+      case "git_remote_add":
+        return uiText("git_result_remote_add_done", "Remote added/updated", summaryVars(job));
+      case "git_reset_repo_checkout":
+        return uiText("git_result_reset_repo_checkout_done", "Repository reset complete", summaryVars(job));
+      case "shell_cmd":
+        return uiText("tools_command_completed_no_output", "Command complete. No output.");
+      default:
+        return localizedResultSummary(job) || uiText("tools_command_completed_no_output", "Command complete. No output.");
+    }
+  }
+
+  function displayJobOutput(job) {
+    const raw = jobOutput(job);
+    const result = job?.result && typeof job.result === "object" ? job.result : {};
+    if (result.empty_output || isNoOutputText(raw)) return friendlyEmptyOutput(job);
+    return raw;
+  }
+
+  function gitUpdateSummary(job) {
+    const action = String(job?.action || "").trim();
+    const result = job?.result && typeof job.result === "object" ? job.result : {};
+    const summary = result.update_summary && typeof result.update_summary === "object" ? result.update_summary : null;
+    return action === "git_pull" ? summary : null;
+  }
+
+  function formatGitUpdateSummary(job, updateSummary) {
+    if (!updateSummary || typeof updateSummary !== "object") return null;
+    if (!updateSummary.updated) {
+      const text = uiText("git_update_up_to_date", "Already up to date");
+      return {
+        card: text,
+        label: text,
+        messages: [],
+        stats: null,
+        detail: `${text}\n\n${uiText("git_update_output", "Git output")}\n${displayJobOutput(job)}`.trim(),
+      };
+    }
+
+    const commits = Array.isArray(updateSummary.commits) ? updateSummary.commits : [];
+    const commitCount = Math.max(0, safeNumber(updateSummary.commit_count, commits.length));
+    const filesChanged = Math.max(0, safeNumber(updateSummary.files_changed));
+    const insertions = Math.max(0, safeNumber(updateSummary.insertions));
+    const deletions = Math.max(0, safeNumber(updateSummary.deletions));
+    const shown = commits.slice(0, 3);
+    const remaining = Math.max(0, commitCount - shown.length);
+
+    const lines = [uiText("git_update_new_updates", "New Updates"), ""];
+    const messages = [];
+    shown.forEach((commit) => {
+      const message = String(commit?.message || commit?.hash || "").trim();
+      if (message) {
+        messages.push(message);
+        lines.push(message);
+      }
+    });
+    if (remaining > 0) {
+      const moreText = uiText("git_update_more_commits", "{count} more commits", { count: remaining });
+      messages.push(moreText);
+      lines.push(moreText);
+    }
+
+    const commitText = uiText("git_update_commit_count", "{count} commits", { count: commitCount });
+    const statText = filesChanged > 0
+      ? uiText("git_update_shortstat", "{commits} | {files} | +{insertions} -{deletions}", {
+          commits: commitText,
+          files: uiText("git_update_file_count", "{count} files", { count: filesChanged }),
+          insertions,
+          deletions,
+        })
+      : uiText("git_update_shortstat_no_files", "{commits} | +{insertions} -{deletions}", {
+          commits: commitText,
+          insertions,
+          deletions,
+        });
+    lines.push("", statText);
+
+    const card = lines.join("\n").trim();
+    const commitLog = commits
+      .map((commit) => `${String(commit?.hash || "").trim()} ${String(commit?.message || "").trim()}`.trim())
+      .filter(Boolean)
+      .join("\n");
+    const raw = jobOutput(job);
+    const detailParts = [card];
+    if (commitLog) detailParts.push("", uiText("git_update_commit_log", "Commit log"), commitLog);
+    if (raw) detailParts.push("", uiText("git_update_output", "Git output"), raw);
+    return {
+      card,
+      label: uiText("git_update_new_updates", "New Updates"),
+      messages,
+      stats: {
+        commits: commitText,
+        files: filesChanged > 0 ? uiText("git_update_file_count", "{count} files", { count: filesChanged }) : "",
+        insertions,
+        deletions,
+      },
+      detail: detailParts.join("\n").trim(),
+    };
+  }
+
   function formatJobText(job) {
-    const body = jobOutput(job) || jobFallbackMessage(job);
+    const updateSummary = gitUpdateSummary(job);
+    const updateText = formatGitUpdateSummary(job, updateSummary);
+    const updateDetail = normalizeText(updateText?.detail || updateSummary?.detail || "");
+    let body = updateDetail;
+    if (!body) {
+      const resultSummary = localizedResultSummary(job);
+      const raw = displayJobOutput(job);
+      if (resultSummary && raw && raw !== resultSummary && !isNoOutputText(jobOutput(job))) {
+        body = `${resultSummary}\n\n${uiText("tools_raw_output", "Raw output")}\n${raw}`;
+      } else {
+        body = resultSummary || raw || jobFallbackMessage(job);
+      }
+    }
     return `> ${jobCommand(job)}\n${body}`;
   }
 
   function makeJobEntry(job, index) {
-    const text = formatJobText(job);
     const status = String(job?.status || "");
     const action = String(job?.action || "").trim();
+    const updateSummary = gitUpdateSummary(job);
+    const updateText = updateSummary ? formatGitUpdateSummary(job, updateSummary) : null;
+    const text = formatJobText(job);
     const timestamp = Number(job?.updated_at || job?.created_at || 0);
     const isNotice = Boolean(job?.payload?.notice);
+    const entryId = `job-${job?.id || index}`;
+    const ackId = updateSummary ? `${entryId}:${updateSummary.after || updateSummary.before || ""}` : "";
     let summary = jobFallbackMessage(job);
     if (status === "running") {
       summary = String(job?.message || "").trim() || actionRunningLabel(action) || summary;
@@ -366,16 +561,26 @@
       summary = actionFailedLabel(action) || summary;
     } else if (isNotice) {
       summary = entrySummary(text);
+    } else if (updateSummary) {
+      summary = normalizeText(updateText?.card || updateSummary.card_summary || updateSummary.display || "") || entrySummary(text);
     } else {
-      summary = actionDoneLabel(action) || summary;
+      summary = localizedResultSummary(job) || actionDoneLabel(action) || summary;
     }
     return {
-      id: `job-${job?.id || index}`,
+      id: entryId,
+      ackId,
       source: status === "running" ? "current" : "history",
       text,
       title: jobCommand(job),
       summary,
+      updateCard: updateText ? {
+        label: updateText.label || "",
+        messages: Array.isArray(updateText.messages) ? updateText.messages : [],
+        stats: updateText.stats || null,
+      } : null,
       status,
+      highlight: Boolean(updateSummary?.updated && status === "done" && !acknowledgedUpdateIds.has(ackId)),
+      updateKind: updateSummary ? "git_pull" : "",
       timestamp,
       timeLabel: relativeTime(timestamp),
     };
@@ -541,14 +746,23 @@
     if (!detail || detail.dataset.toolsDetailScrollBound === "1") return;
     detail.dataset.toolsDetailScrollBound = "1";
     detail.addEventListener("scroll", () => rememberDetailScroll(entry.id, detail), { passive: true });
-    detail.addEventListener("wheel", (event) => event.stopPropagation(), { passive: true });
-    detail.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
   }
 
   function setMeasuredDetailHeight(card) {
     const wrap = card?.querySelector?.(".tools-console-log__detailWrap");
     if (!wrap) return;
     wrap.style.maxHeight = `${wrap.scrollHeight}px`;
+  }
+
+  function stabilizeExpandedDetail(card) {
+    const wrap = card?.querySelector?.(".tools-console-log__detailWrap");
+    if (!wrap) return;
+    wrap.style.transition = "none";
+    wrap.style.animation = "none";
+    wrap.style.opacity = "1";
+    wrap.style.transform = "translateY(0)";
+    setMeasuredDetailHeight(card);
+    wrap.getBoundingClientRect();
   }
 
   function animateDetailCollapse(card) {
@@ -591,10 +805,113 @@
         source: entry.source,
         title: entry.title,
         summary: entry.summary,
+        updateCard: entry.updateCard || null,
         text: entry.text,
         status: entry.status || "",
+        highlight: Boolean(entry.highlight),
+        updateKind: entry.updateKind || "",
         hasTime: Number(entry.timestamp || 0) > 0,
       })),
+    });
+  }
+
+  function isRunningEntry(entry) {
+    return String(entry?.status || "") === "running";
+  }
+
+  function canAutoFocusEntry(entry) {
+    return Boolean(entry) && !isRunningEntry(entry);
+  }
+
+  function currentCards(out) {
+    const scroller = getLogScroller(out);
+    return scroller ? Array.from(scroller.querySelectorAll("[data-notification-id]")) : [];
+  }
+
+  function canPatchExistingCards(out, model) {
+    const cards = currentCards(out);
+    return cards.length === model.entries.length && cards.every((card, index) => (
+      card.dataset.notificationId === model.entries[index]?.id
+    ));
+  }
+
+  function setNodeText(node, value) {
+    if (node && node.textContent !== value) node.textContent = value;
+  }
+
+  function appendTextNode(parent, className, text) {
+    const node = document.createElement("span");
+    node.className = className;
+    node.textContent = text;
+    parent.appendChild(node);
+    return node;
+  }
+
+  function renderSummaryBody(body, entry) {
+    if (!body) return;
+    body.replaceChildren();
+    body.classList.toggle("tools-console-log__cardBody--update", Boolean(entry.updateCard));
+    if (!entry.updateCard) {
+      body.textContent = entry.summary;
+      return;
+    }
+
+    const label = String(entry.updateCard.label || "").trim();
+    if (label) appendTextNode(body, "tools-console-log__updateLabel", label);
+
+    const messages = Array.isArray(entry.updateCard.messages) ? entry.updateCard.messages.filter(Boolean) : [];
+    if (messages.length) {
+      const messageWrap = document.createElement("span");
+      messageWrap.className = "tools-console-log__updateMessages";
+      messages.slice(0, 3).forEach((message) => appendTextNode(messageWrap, "tools-console-log__updateMessage", message));
+      body.appendChild(messageWrap);
+    }
+
+    const stats = entry.updateCard.stats && typeof entry.updateCard.stats === "object" ? entry.updateCard.stats : null;
+    if (stats) {
+      const statWrap = document.createElement("span");
+      statWrap.className = "tools-console-log__updateStats";
+      if (stats.commits) appendTextNode(statWrap, "tools-console-log__updateStat", stats.commits);
+      if (stats.files) appendTextNode(statWrap, "tools-console-log__updateStat", stats.files);
+      appendTextNode(statWrap, "tools-console-log__updateStat tools-console-log__updateStat--add", `+${Math.max(0, safeNumber(stats.insertions))}`);
+      appendTextNode(statWrap, "tools-console-log__updateStat tools-console-log__updateStat--delete", `-${Math.max(0, safeNumber(stats.deletions))}`);
+      body.appendChild(statWrap);
+    } else if (!messages.length && label) {
+      body.textContent = label;
+    }
+  }
+
+  function patchCard(card, entry, context) {
+    const expanded = activeNotificationId === entry.id;
+    card.classList.toggle("tools-console-log__current", entry.source === "current");
+    card.classList.toggle("tools-console-log__history", entry.source === "history");
+    card.classList.toggle("is-expanded", expanded);
+    card.classList.toggle("is-git-update", entry.updateKind === "git_pull");
+    card.classList.toggle("is-unread-update", Boolean(entry.highlight));
+    card.dataset.toolsNotificationMode = context.mode;
+    card.setAttribute("aria-expanded", expanded ? "true" : "false");
+
+    setNodeText(card.querySelector(".tools-console-log__cardTitle"), entry.title);
+    const head = card.querySelector(".tools-console-log__cardHead");
+    let time = card.querySelector(".tools-console-log__cardTime");
+    if (entry.timeLabel) {
+      if (!time && head) {
+        time = document.createElement("span");
+        time.className = "tools-console-log__cardTime";
+        head.appendChild(time);
+      }
+      setNodeText(time, entry.timeLabel);
+    } else if (time) {
+      time.remove();
+    }
+    renderSummaryBody(card.querySelector(".tools-console-log__cardBody"), entry);
+    setNodeText(card.querySelector(".tools-console-log__detail"), entry.text);
+  }
+
+  function patchExistingCards(out, model, context) {
+    currentCards(out).forEach((card, index) => patchCard(card, model.entries[index], context));
+    out.querySelectorAll(".tools-console-log__clearBtn").forEach((button) => {
+      button.disabled = !model.hasHistory;
     });
   }
 
@@ -611,6 +928,57 @@
   function normalizeActiveEntry(model) {
     if (!activeNotificationId) return;
     if (!model.entries.some((entry) => entry.id === activeNotificationId)) activeNotificationId = "";
+  }
+
+  function latestEntry(model) {
+    if (!model?.entries?.length) return null;
+    let latest = null;
+    let latestTime = 0;
+    model.entries.forEach((entry) => {
+      const timestamp = Number(entry.timestamp || 0);
+      if (Number.isFinite(timestamp) && timestamp > 0 && timestamp >= latestTime) {
+        latest = entry;
+        latestTime = timestamp;
+      }
+    });
+    if (latest) return latest;
+    return model.entries.slice().reverse().find((entry) => entry.source === "current") || model.entries[model.entries.length - 1];
+  }
+
+  function createEntryFocus(out, entryId, expanded = true, options = {}) {
+    const scroller = getLogScroller(out);
+    const card = findCardById(scroller, entryId);
+    const cardRect = card?.getBoundingClientRect?.();
+    return {
+      id: entryId,
+      expanded,
+      keyboard: false,
+      instant: options.instant === true,
+      smoothOnce: options.smoothOnce === true,
+      stableDetail: options.stableDetail === true,
+      mode: out?.dataset?.toolsNotificationMode || getMode(),
+      scrollTop: scroller?.scrollTop || 0,
+      cardTop: cardRect ? cardRect.top : null,
+    };
+  }
+
+  function focusEntry(out, entryId, options = {}) {
+    if (!entryId) return "";
+    const expanded = options.expand !== false;
+    clearCollapseRenderTimer();
+    activeNotificationId = expanded ? entryId : "";
+    pendingEntryFocus = createEntryFocus(out, entryId, expanded, options);
+    detailScrollState.delete(entryId);
+    return entryId;
+  }
+
+  function focusLatestEntry(out = lastHost, options = {}) {
+    const model = buildModel(lastState);
+    const entry = latestEntry(model);
+    if (!entry) return "";
+    const focusedId = focusEntry(out, entry.id, options);
+    if (out) render(out, model.state, lastOptions, { force: true, preserveScroll: false });
+    return focusedId;
   }
 
   function captureScrollAnchor(out, anchorId = activeNotificationId) {
@@ -665,7 +1033,9 @@
       scroller.scrollTop = clampScrollTop(scroller, focus.scrollTop || 0);
       return;
     }
-    const nextTop = (focus.scrollTop || 0) + card.getBoundingClientRect().top - focus.cardTop;
+    const cardDelta = card.getBoundingClientRect().top - focus.cardTop;
+    if (Math.abs(cardDelta) < 1) return;
+    const nextTop = (focus.scrollTop || 0) + cardDelta;
     scroller.scrollTop = clampScrollTop(scroller, nextTop);
   }
 
@@ -696,6 +1066,19 @@
     const targetRect = phase === "opening" ? headRect : effectiveCard;
     let delta = 0;
 
+    // User-click expand policy:
+    //   - if the whole expanded card already fits in view, no-op
+    //   - if the card is taller than the viewport but its head is in view, no-op (let the
+    //     detail's own scrollbar handle overflow instead of yanking the body)
+    //   - otherwise, fall through and align so the detail box is visible
+    const isUserInteraction = !focus.smoothOnce && !focus.stableDetail && !focus.instant;
+    if (isUserInteraction) {
+      const expandedFullyVisible = effectiveCard.top >= viewTop && effectiveCard.bottom <= viewBottom;
+      if (expandedFullyVisible) return;
+      const headVisible = headRect.top >= viewTop && headRect.bottom <= viewBottom;
+      if (headVisible && effectiveCard.height >= viewportHeight) return;
+    }
+
     if (phase === "opening" && targetRect.top >= viewTop && targetRect.bottom <= viewBottom) {
       return;
     }
@@ -710,8 +1093,9 @@
 
     if (Math.abs(delta) < 2) return;
     const target = clampScrollTop(scroller, scroller.scrollTop + delta);
+    const behavior = opts.behavior || (prefersReducedMotion() ? "auto" : "smooth");
     try {
-      scroller.scrollTo({ top: target, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      scroller.scrollTo({ top: target, behavior });
     } catch {
       scroller.scrollTop = target;
     }
@@ -735,6 +1119,30 @@
     const mode = getMode();
     global.requestAnimationFrame(() => {
       if (token !== entryFocusToken) return;
+      if (focus.instant) {
+        scrollEntryIntoView(out, focus, "settled", { behavior: "auto" });
+        return;
+      }
+      if (focus.smoothOnce) {
+        scrollEntryIntoView(out, focus, "settled");
+        return;
+      }
+      // User-click expand/collapse policy:
+      //   - mouse/touch: never move the body scroll. The user clicked something they were
+      //     already looking at; nudging the page underneath them feels like the card is
+      //     "sliding up from the bottom". If the detail overflows below the viewport, the
+      //     user can wheel down themselves; the detail's own scrollbar handles the rest.
+      //   - keyboard activate (Tab→Enter): the activated card may be off-screen, so bring
+      //     the head into view via the opening pass (which itself no-ops when the head is
+      //     already visible).
+      if (!focus.stableDetail) {
+        if (focus.keyboard) {
+          scrollEntryIntoView(out, focus, "opening");
+        }
+        return;
+      }
+      // Auto-focus with stableDetail (e.g. autoFocusLatest on a fresh notification): keep the
+      // two-phase concurrent + settled flow so the freshly expanded card lands cleanly.
       if (focus.expanded && !prefersReducedMotion()) {
         const scroller = getLogScroller(out);
         const card = findCardById(scroller, focus.id);
@@ -787,6 +1195,8 @@
     const card = document.createElement("div");
     card.className = `tools-console-log__card tools-console-log__${entry.source}`;
     card.classList.toggle("is-expanded", expanded);
+    card.classList.toggle("is-git-update", entry.updateKind === "git_pull");
+    card.classList.toggle("is-unread-update", Boolean(entry.highlight));
     card.dataset.notificationId = entry.id;
     card.dataset.toolsNotificationMode = context.mode;
     card.setAttribute("role", "button");
@@ -812,7 +1222,7 @@
 
     const body = document.createElement("span");
     body.className = "tools-console-log__cardBody";
-    body.textContent = entry.summary;
+    renderSummaryBody(body, entry);
     card.appendChild(body);
 
     card.appendChild(renderDetail(entry));
@@ -829,6 +1239,7 @@
       }
       const nextExpanded = !expanded;
       pendingEntryFocus = captureEntryInteraction(context.out, entry.id, nextExpanded, keyboard);
+      acknowledgeUpdateEntry(entry, card);
 
       if (!nextExpanded) {
         clearCollapseRenderTimer();
@@ -919,12 +1330,13 @@
   function render(out, state = {}, options = {}, renderOptions = {}) {
     if (!out) return;
     bindModeSync();
-    const interactionFocus = pendingEntryFocus;
-    const scrollAnchor = renderOptions.preserveScroll === false || interactionFocus ? null : captureScrollAnchor(out);
+    let interactionFocus = pendingEntryFocus;
+    let scrollAnchor = renderOptions.preserveScroll === false || interactionFocus ? null : captureScrollAnchor(out);
     const mode = getMode();
     const model = buildModel(state);
     lastState = model.state;
     lastOptions = options;
+    publishUnreadCount(model.state);
     syncHostMode(out, mode);
 
     if (!renderOptions.force && isCollapseInProgress(out)) {
@@ -934,21 +1346,50 @@
     }
 
     normalizeActiveEntry(model);
+    const autoFocusLatest = options.autoFocusLatest === true && !renderOptions.skipAutoFocusLatest;
+    const latest = autoFocusLatest ? latestEntry(model) : null;
+    if (canAutoFocusEntry(latest) && latest.id !== lastAutoFocusedEntryId) {
+      lastAutoFocusedEntryId = latest.id;
+      focusEntry(out, latest.id, { expand: true, smoothOnce: true, stableDetail: true });
+      interactionFocus = pendingEntryFocus;
+      scrollAnchor = null;
+    }
     const signature = renderSignature(model, mode);
-    const canPatchExisting = !interactionFocus && signature === lastRenderSignature && out.childElementCount > 0;
     const context = { out, mode, model, options };
 
-    if (canPatchExisting) {
+    if (!interactionFocus && signature === lastRenderSignature && out.childElementCount > 0) {
       updateRelativeTimeLabels(out, model.entries);
       scheduleRelativeTimeRefresh(model.entries);
+      return;
+    }
+    if (!interactionFocus && out.childElementCount > 0 && canPatchExistingCards(out, model)) {
+      patchExistingCards(out, model, context);
+      lastRenderSignature = signature;
+      scheduleRelativeTimeRefresh(model.entries);
+      if (activeNotificationId) {
+        global.requestAnimationFrame(() => {
+          const scroller = getLogScroller(out);
+          const card = findCardById(scroller, activeNotificationId);
+          setMeasuredDetailHeight(card);
+          restoreDetailScroll(out, activeNotificationId);
+        });
+      }
       return;
     }
     out.replaceChildren(mode === MODE.PORTRAIT ? renderPortraitCenter(context) : renderLandscapePanel(context));
     lastRenderSignature = signature;
     if (interactionFocus) {
       restoreEntryInteraction(out, interactionFocus);
+      if (interactionFocus.instant || interactionFocus.stableDetail) {
+        const scroller = getLogScroller(out);
+        stabilizeExpandedDetail(findCardById(scroller, interactionFocus.id));
+      }
     } else {
       restoreScrollAnchor(out, scrollAnchor);
+      if (activeNotificationId) {
+        const scroller = getLogScroller(out);
+        stabilizeExpandedDetail(findCardById(scroller, activeNotificationId));
+      }
     }
     scheduleRelativeTimeRefresh(model.entries);
     if (interactionFocus) {
@@ -987,13 +1428,22 @@
     });
   }
 
+  function unreadCount(state = lastState) {
+    return buildModel(state).entries.filter((entry) => Boolean(entry.highlight)).length;
+  }
+
   global.CarrotToolsNotifications = {
     bindPanelDrag,
     bindStatusGesture,
+    unreadCount,
     render,
     resetDetail() {
       activeNotificationId = "";
+      lastAutoFocusedEntryId = "";
       detailScrollState.clear();
+    },
+    focusLatest(options = {}) {
+      return focusLatestEntry(options.out || lastHost, options);
     },
     syncMode(out = lastHost) {
       if (out) syncHostMode(out);

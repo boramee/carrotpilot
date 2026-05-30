@@ -93,7 +93,7 @@ def apply_steer_angle_limits_physics(desired_sw_deg: float,
   err = abs(target_sw - last_sw_deg)
   if err > 20.0:
     max_drw_per_tick_deg *= 0.5
-  
+
   # --- rate limit ---
   cmd_rw = rate_limit(target_rw, last_rw, -max_drw_per_tick_deg, max_drw_per_tick_deg)
 
@@ -105,7 +105,7 @@ def apply_steer_angle_limits_physics(desired_sw_deg: float,
 
   cmd_sw = cmd_rw * steer_ratio
   return float(np.clip(cmd_sw, -steer_sw_max_deg, steer_sw_max_deg))
-  
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -140,7 +140,8 @@ class CarController(CarControllerBase):
     self.apply_angle_last = 0
     self.lkas_max_torque = 0
     self.angle_max_torque = 250
-    self.steer_pressed_timer = 0
+    self.prev_abs_angle_error = 0.0
+    self.recover_level = 1.0
 
     self.lkas11_active = False
 
@@ -187,7 +188,7 @@ class CarController(CarControllerBase):
         self.steerDeltaDownLC = steerDeltaDownLC
       else:
         self.steerDeltaDownLC = self.steerDeltaDown
-        
+
       self.soft_hold_mode = 1 if params.get_int("AutoCruiseControl") > 1 else 2
       self.hapticFeedbackWhenSpeedCamera = int(params.get_int("HapticFeedbackWhenSpeedCamera"))
 
@@ -209,7 +210,7 @@ class CarController(CarControllerBase):
     else:
       self.params.STEER_DELTA_UP = self.steerDeltaUp
       self.params.STEER_DELTA_DOWN = self.steerDeltaDown
-    
+
     angle_control = self.CP.flags & HyundaiFlags.ANGLE_CONTROL
 
     # steering torque
@@ -221,7 +222,7 @@ class CarController(CarControllerBase):
                                                                        self.angle_limit_counter, self.max_angle_frames,
                                                                        MAX_ANGLE_CONSECUTIVE_FRAMES)
 
-    #apply_angle = apply_std_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw, 
+    #apply_angle = apply_std_steer_angle_limits(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw,
     #                                           CS.out.steeringAngleDeg, CC.latActive, self.params.ANGLE_LIMITS)
 
     apply_angle = apply_steer_angle_limits_physics(
@@ -235,16 +236,27 @@ class CarController(CarControllerBase):
       self.params.ANGLE_LIMITS.STEER_ANGLE_MAX
     )
 
-    
+
     if angle_control:
       apply_steer_req = CC.latActive
 
+    def _clip(x, lo, hi):
+      return min(max(x, lo), hi)
+
+    def _scale01(x, lo, hi):
+      return _clip((x - lo) / (hi - lo), 0.0, 1.0)
+
+    angle_error = apply_angle - CS.out.steeringAngleDeg
+    abs_angle_error = abs(angle_error)
+
+    error_delta = self.prev_abs_angle_error - abs_angle_error
+
     if CS.out.steeringPressed:
-      #self.apply_angle_last = CS.out.steeringAngleDeg
-      self.lkas_max_torque = max(self.lkas_max_torque - 20, 25)
-      self.steer_pressed_timer = int(2.0 / DT_CTRL)
+      # Driver touched the wheel, immediately yield.
+      self.lkas_max_torque = 25
+      self.recover_level = 0.0
+
     else:
-      angle_error = abs(apply_angle - CS.out.steeringAngleDeg)
       target_torque = self.angle_max_torque
 
       max_steering_tq = self.params.STEER_DRIVER_ALLOWANCE * 0.7
@@ -252,19 +264,33 @@ class CarController(CarControllerBase):
       rate_up = self.params.ANGLE_TORQUE_UP_RATE * rate_ratio
       rate_down = self.params.ANGLE_TORQUE_DOWN_RATE * rate_ratio
 
-      if self.steer_pressed_timer > 0:
-        self.steer_pressed_timer -= 1
+      recover_level = self.recover_level
 
-        if angle_error < 2.0:
-          self.steer_pressed_timer -= 50
+      # error_delta > 0 means actual steering angle and apply_angle are getting closer.
+      recover_factor = 0.0
+      if error_delta > 0.02:
+        recover_factor = _scale01(error_delta, 0.02, 0.30)
 
-        target_torque *= 0.3
+      # Normal recovery is slow.
+      # If angle error is decreasing, recover faster.
+      recover_rate = 0.005 + recover_factor * 0.035
+      recover_level = _clip(recover_level + recover_rate, 0.0, 1.0)
+      self.recover_level = recover_level
+
+      # While recovering, limit available torque.
+      # recover_level = 0.0 -> 30%
+      # recover_level = 1.0 -> 100%
+      target_torque *= 0.3 + recover_level * 0.7
+
+      # If angle error is already converging, allow torque to come back a little faster.
+      rate_up *= 1.0 + recover_factor * 0.5
 
       if self.lkas_max_torque > target_torque:
         self.lkas_max_torque = max(self.lkas_max_torque - rate_down, target_torque)
       else:
         self.lkas_max_torque = min(self.lkas_max_torque + rate_up, target_torque)
 
+    self.prev_abs_angle_error = abs_angle_error
 
     if not CC.latActive:
       apply_torque = 0
@@ -288,7 +314,7 @@ class CarController(CarControllerBase):
 
     active_speed_decel = hud_control.activeCarrot == 3 and self.activeCarrot != 3 # 3: Speed Decel
     self.activeCarrot = hud_control.activeCarrot
-    if active_speed_decel and self.speedCameraHapticEndFrame < 0: # 과속카메라 감속시작      
+    if active_speed_decel and self.speedCameraHapticEndFrame < 0: # 과속카메라 감속시작
       self.speedCameraHapticEndFrame = self.frame + (8.0 / DT_CTRL)  #8초간 켜줌.
     elif not active_speed_decel:
       self.speedCameraHapticEndFrame = -1
@@ -337,7 +363,7 @@ class CarController(CarControllerBase):
         can_sends.extend(hyundaicanfd.create_steering_messages_camera_scc(self.frame, self.packer, self.CP, self.CAN, CC, apply_steer_req, apply_torque, CS, apply_angle, self.lkas_max_torque, angle_control))
       else:
         can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled, apply_steer_req, apply_torque, apply_angle, self.lkas_max_torque, angle_control))
-              
+
       # prevent LFA from activating on HDA2 by sending "no lane lines detected" to ADAS ECU
       if self.frame % 5 == 0 and hda2 and not camera_scc:
         can_sends.extend(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS))
@@ -403,7 +429,7 @@ class CarController(CarControllerBase):
         #jerk = 3.0 if actuators.longControlState == LongCtrlState.pid else 1.0
         use_fca = self.CP.flags & HyundaiFlags.USE_FCA.value
         if camera_scc:
-          
+
           can_sends.extend(hyundaican.create_acc_commands_scc(self.packer, CC.enabled, accel, self.hyundai_jerk, int(self.frame / 2),
                                                           hud_control, set_speed_in_units, stopping,
                                                           CC.cruiseControl.override, casper_opt, CS, self.soft_hold_mode))
@@ -628,7 +654,7 @@ class HyundaiJerk:
             self.carrot_cruise_accel = max(carrot_cruise, self.carrot_cruise_accel - 1.0 * DT_CTRL) #  점진적으로 줄임.
     if self.carrot_cruise == 0:
       self.carrot_cruise_accel = CS.out.aEgo
-    
+
   def make_jerk(self, CP, CS, accel, actuators, hud_control):
     if actuators.longControlState == LongCtrlState.stopping:
       self.jerk = self.jerk_u_min / 2 - CS.out.aEgo

@@ -1,7 +1,5 @@
 name: weekly CI test report
 on:
-  schedule:
-    - cron: '37 9 * * 1' # 9:37AM UTC -> 2:37AM PST every monday
   workflow_dispatch:
     inputs:
       ci_runs:
